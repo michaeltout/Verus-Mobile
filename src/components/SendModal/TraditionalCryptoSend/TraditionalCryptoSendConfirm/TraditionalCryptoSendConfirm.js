@@ -116,7 +116,7 @@ class TraditionalCryptoSendConfirm extends Component {
         },
         {
           key: 'Fee',
-          data: fee.amount + ' ' + fee.currency,
+          data: fee.amount + ' ' + coinObj.display_ticker,
           right: validFeeFiatMultiplier
             ? `${feeFiatMultiplier.multipliedBy(fee.amount).toFixed(2)} ${
                 this.props.displayCurrency

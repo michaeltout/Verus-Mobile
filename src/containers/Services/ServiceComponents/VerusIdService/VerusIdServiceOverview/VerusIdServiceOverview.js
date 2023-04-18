@@ -27,7 +27,7 @@ class VerusIdServiceOverview extends Component {
 
       return getFriendlyNameMap({id: chain}, identityObj);
     } catch (e) {
-      return {['i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV']: 'VRSC'};
+      return {['iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq']: 'VRSC'};
     }
   }
 

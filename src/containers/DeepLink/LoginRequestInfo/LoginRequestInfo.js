@@ -41,13 +41,9 @@ const LoginRequestInfo = props => {
       animationType: 'slide',
       cancel: () => setVerusIdDetailsModalProps(null),
       loadFriendlyNames: async () => {
-        try {
-          const identityObj = await getVerusId(chain, iAddress);
-    
-          return getFriendlyNameMap({id: chain}, identityObj);
-        } catch (e) {
-          return {['i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV']: 'VRSC'};
-        }
+        const identityObj = await getVerusId(chain, iAddress);
+  
+        return getFriendlyNameMap({id: chain}, identityObj);
       },
       iAddress,
       chain

@@ -81,6 +81,8 @@ class VerusMobile extends React.Component {
   }
   
   componentDidMount() {    
+    Alert.alert("Testnet Warning", "This app is designed for the VERUS TESTNET ONLY! All Verus testnet coins/currencies have no value and will disappear whenever the testnet is reset! Do not assume any funds in this wallet have any value!")
+
     activateKeyboardListener()
 
     AppState.addEventListener("change", (nextAppState) => this._handleAppStateChange(nextAppState));

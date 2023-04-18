@@ -77,7 +77,7 @@ export default function VerusIdDetailsModal(props) {
               </Text>
               <Button
                 onPresscolor={Colors.primaryColor}
-                disabled={verusId == null || failedToLoad}
+                disabled={true}
                 onPress={openIdDetails}>
                 {'Details'}
               </Button>

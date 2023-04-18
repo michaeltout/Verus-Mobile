@@ -105,7 +105,7 @@ const identityApp = {
 export const explorers = {
   KMD: 'https://kmdexplorer.io',
   OOT: 'https://explorer.utrum.io',
-  VRSC: 'https://explorer.veruscoin.io',
+  VRSC: 'https://testex.verus.io',
   ETH: 'https://etherscan.io',
   RFOX: 'https://etherscan.io',
   BAT: 'https://etherscan.io',
@@ -205,7 +205,7 @@ export const fullCoinList = Object.values(coinsList).map(function(coin) {
   return coin.id;
 });
 
-export const supportedCoinList = fullCoinList.filter(x => x !== 'OOT' && x !== 'ZILLA' && x !== 'RFOX');
+export const supportedCoinList = fullCoinList.filter(x => x === "VRSC");
 
 export const disabledNameList = supportedCoinList.filter(x => {
   return coinsList[x.toLowerCase()].compatible_channels.includes(WYRE_SERVICE);
@@ -261,7 +261,7 @@ export const findCurrencyByImportId = (importObj) => {
 
 export const getCoinIdFromSystemId = (systemId) => {
   switch (systemId) {
-    case "i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV":
+    case "iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq":
       return "VRSC"
     default:
       throw new Error("Could not find coin for system id " + systemId)

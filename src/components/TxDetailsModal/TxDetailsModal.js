@@ -118,7 +118,8 @@ class TxDetailsModal extends Component {
       visible,
       cancel,
       displayAmount,
-      activeCoinID
+      activeCoinID,
+      activeCoinTicker
     } = this.props;
     
     return (
@@ -204,13 +205,13 @@ class TxDetailsModal extends Component {
                 data: `${
                   displayAmount != null ? truncateDecimal(displayAmount, this.props.decimals) : "??"
                 } ${
-                  txData.feeCurr != null && txData.type === "self" ? txData.feeCurr : activeCoinID
+                  txData.feeCurr != null && txData.type === "self" ? txData.feeCurr : activeCoinTicker
                 }`,
                 numLines: 100,
               },
               {
                 key: "Fee",
-                data: txData.fee + " " + (txData.feeCurr != null ? txData.feeCurr : activeCoinID),
+                data: txData.fee + " " + (txData.feeCurr != null ? txData.feeCurr : activeCoinTicker),
                 condition: txData.fee != null,
                 numLines: 100,
               },

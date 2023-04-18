@@ -235,6 +235,7 @@ class Overview extends Component {
               displayAmount: displayAmount,
               txData: item,
               activeCoinID: this.props.activeCoin.id,
+              activeCoinTicker: this.props.activeCoin.display_ticker,
               TxLogo: AvatarImg,
               decimals: decimals,
             },
@@ -253,7 +254,7 @@ class Overview extends Component {
           } ${
             item.feeCurr != null && item.type === "self"
               ? item.feeCurr
-              : this.props.activeCoin.id
+              : this.props.activeCoin.display_ticker
           }`}
           description={subtitle}
           descriptionNumberOfLines={1}

@@ -161,7 +161,7 @@ export const DEVICE_WINDOW_WIDTH = Dimensions.get('window').width;
 export const DEVICE_WINDOW_HEIGHT = Dimensions.get('window').height;
 
 // Init
-export const START_COINS = ["VRSC", "BTC", "ETH"]
+export const START_COINS = ["VRSC"]
 
 // Account data initialization steps
 export const VALIDATING_ACCOUNT = 'validating'
