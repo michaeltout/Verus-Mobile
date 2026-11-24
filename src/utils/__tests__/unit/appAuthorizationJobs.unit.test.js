@@ -296,3 +296,61 @@ it('does not reconcile an actively edited job or throttle its next idle refresh'
   expect(mockReconcile).toHaveBeenCalledTimes(1);
   expect(mockReconcile).toHaveBeenCalledWith(job.id, expect.any(Object));
 });
+
+const completedJob = job => {
+  const receipt = {
+    systemId: job.systemId,
+    txid: 'confirmed-transaction',
+    status: 'submitted',
+    broadcastAttempted: true,
+    admittedAt: 1234,
+    rawTx: 'bulky signed transaction',
+    inputs: [{rawTransaction: 'bulky funding transaction'}],
+    fundingApproval: {txHex: 'bulky unsigned transaction'},
+  };
+  return {
+    ...job,
+    status: 'complete',
+    responseHex: 'aabb',
+    grantConfirmed: true,
+    giftConfirmed: true,
+    userIdentityLinked: true,
+    storageIdentitiesManaged: true,
+    grantID: 'grant',
+    storageBindings: [{storageID: 'shared storage'}],
+    transactions: {grant: receipt},
+    authorizationPlan: {updates: ['large identity snapshots']},
+    giftDiscovery: {seed: 'donor secret'},
+    expectedGrant: {g: 'grant'},
+  };
+};
+
+it.each(['response_ready', 'complete'])(
+  'deletes resolved recovery payloads in the %s write and retains replay and response state',
+  async status => {
+    const original = request();
+    const job = await createAuthorizationJob(original);
+    const completed = await updateAuthorizationJob(job.id, {
+      ...completedJob(job),
+      status,
+      userIdentityLinked: undefined,
+      storageIdentitiesManaged: undefined,
+    });
+
+    expect(completed.transactions.grant).toEqual({
+      systemId: job.systemId,
+      txid: 'confirmed-transaction',
+      status: 'submitted',
+      broadcastAttempted: true,
+      admittedAt: 1234,
+    });
+    expect(completed.grantTransaction).toBeUndefined();
+    expect(completed.authorizationPlan).toBeUndefined();
+    expect(completed.giftDiscovery).toBeUndefined();
+    expect(completed.requestHex).toBe(job.requestHex);
+    expect(completed.responseHex).toBe('aabb');
+    expect((await createAuthorizationJob(original)).status).toBe(status);
+    expect(mockDispatch.mock.calls.at(-1)[0].payload.authorizationJobs[job.id])
+      .toMatchObject({grantTxid: 'confirmed-transaction'});
+  },
+);

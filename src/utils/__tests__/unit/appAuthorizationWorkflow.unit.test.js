@@ -363,7 +363,6 @@ beforeEach(() => {
       id,
       {
         transactions: {[options.receiptKey]: saved},
-        grantTransaction: saved,
         grantConfirmed: false,
         status: 'waiting_for_grant_confirmation',
       },
@@ -488,11 +487,12 @@ it('allows unrelated app updates without replacing the approved baseline', async
   });
 
   await approveAuthorization(job.id, {selectedIdentity: user});
+  const admitted = await getAuthorizationJob(job.id);
+  expect(admitted.approvedDelegator.txid).toBe(approved.txid);
+  expect(admitted.expectedGrant.o[0]).toBe(approved.txid);
   mockConfirm.mockResolvedValue(true);
   await prepareAuthorizationResponse(job.id);
   const saved = await getAuthorizationJob(job.id);
-  expect(saved.approvedDelegator.txid).toBe(approved.txid);
-  expect(saved.expectedGrant.o[0]).toBe(approved.txid);
   expect(saved.responseHex).toBeTruthy();
 });
 
@@ -504,11 +504,14 @@ it('accepts the same approved outpoint confirmed at a different block height', a
   });
 
   await approveAuthorization(job.id, {selectedIdentity: user});
+  expect((await getAuthorizationJob(job.id)).expectedGrant.o).toEqual([
+    approved.txid,
+    approved.vout,
+  ]);
   mockConfirm.mockResolvedValue(true);
   await prepareAuthorizationResponse(job.id);
 
   const saved = await getAuthorizationJob(job.id);
-  expect(saved.expectedGrant.o).toEqual([approved.txid, approved.vout]);
   expect(saved.responseHex).toBeTruthy();
   expect(mockLoadRevision).not.toHaveBeenCalled();
 });
@@ -1078,22 +1081,43 @@ it.each(['appID', 'delegateID', 'unavailable'])(
   },
 );
 
-it('retains exactly the same signed response for a failed delivery retry', async () => {
-  const job = await begin();
+it('compacts before notifying the app and retains exactly the same signed response after a failed POST', async () => {
+  const job = await begin({
+    responseURIs: [
+      ResponseURI.fromUriString(
+        'https://example.com/response',
+        ResponseURI.TYPE_POST,
+      ),
+    ],
+  });
   await approveAuthorization(job.id, {selectedIdentity: user});
   mockConfirm.mockResolvedValue(true);
   mockDeliver
-    .mockRejectedValueOnce(new Error('Offline'))
+    .mockImplementationOnce(async () => {
+      const saved = await getAuthorizationJob(job.id);
+      expect(saved.status).toBe('response_ready');
+      expect(saved.responseHex).toBeTruthy();
+      expect(saved.transactions.grant).not.toHaveProperty('rawTx');
+      expect(saved).not.toHaveProperty('authorizationPlan');
+      expect(saved).not.toHaveProperty('appEncryptionResponse');
+      throw new Error('Offline');
+    })
     .mockResolvedValueOnce(undefined);
   await expect(deliverAuthorizationResponse(job.id)).rejects.toThrow('Offline');
-  const prepared = (await getAuthorizationJob(job.id)).responseHex;
+  const failed = await getAuthorizationJob(job.id);
+  const prepared = failed.responseHex;
   expect(prepared).toBeTruthy();
+  expect(failed.status).toBe('response_ready');
+  const confirmationReads = mockConfirm.mock.calls.length;
   await deliverAuthorizationResponse(job.id);
   const delivered = mockDeliver.mock.calls.map(([, response]) =>
     response.toBuffer().toString('hex'),
   );
   expect(delivered).toEqual([prepared, prepared]);
   expect(mockSubmit).toHaveBeenCalledTimes(1);
+  expect(mockSigningKeys).toHaveBeenCalledTimes(1);
+  expect(mockDeriveChannel).toHaveBeenCalledTimes(1);
+  expect(mockConfirm).toHaveBeenCalledTimes(confirmationReads);
   const response = new GenericResponse();
   response.fromBuffer(Buffer.from(prepared, 'hex'));
   expect(response.signature.identityID.toIAddress()).toBe(user.identityID);
@@ -1139,7 +1163,7 @@ it('does not rewrite an unchanged pending or confirmed authorization', async () 
   expect((await getAuthorizationJob(job.id)).revision).toBe(confirmed.revision);
 });
 
-it('saves the channel and signed response together after final grant verification', async () => {
+it('saves only the final response and compact receipts in the response preparation write', async () => {
   const job = await begin();
   await approveAuthorization(job.id, {selectedIdentity: user});
   mockConfirm.mockResolvedValue(true);
@@ -1150,8 +1174,14 @@ it('saves the channel and signed response together after final grant verificatio
 
   expect(mockStorageWrite).toHaveBeenCalledTimes(1);
   const saved = await getAuthorizationJob(job.id);
-  expect(saved.appEncryptionResponse).toBeTruthy();
+  expect(saved.status).toBe('response_ready');
+  expect(saved.appEncryptionResponse).toBeUndefined();
+  expect(saved.authorizationPlan).toBeUndefined();
+  expect(saved.approvedDelegator).toBeUndefined();
+  expect(saved.expectedGrant).toBeUndefined();
+  expect(saved.transactions.grant.rawTx).toBeUndefined();
   expect(saved.responseHex).toBeTruthy();
+  expect(mockDeliver).not.toHaveBeenCalled();
 });
 
 it('finishes redirect bookkeeping before launch and retries the frozen response after launch failure', async () => {
@@ -1163,7 +1193,12 @@ it('finishes redirect bookkeeping before launch and retries the frozen response 
   await prepareAuthorizationResponse(job.id);
   const prepared = await getAuthorizationJob(job.id);
   mockDeliver.mockImplementationOnce(async () => {
-    expect((await getAuthorizationJob(job.id)).status).toBe('complete');
+    const completed = await getAuthorizationJob(job.id);
+    expect(completed.status).toBe('complete');
+    expect(completed.transactions.grant.rawTx).toBeUndefined();
+    expect(completed.authorizationPlan).toBeUndefined();
+    expect(completed.appEncryptionResponse).toBeUndefined();
+    expect(completed.responseHex).toBe(prepared.responseHex);
     throw new Error('Could not open requester');
   });
 
@@ -1180,6 +1215,31 @@ it('finishes redirect bookkeeping before launch and retries the frozen response 
     canRetryResponse: true,
   });
   expect(mockDeriveChannel).toHaveBeenCalledTimes(1);
+});
+
+it('reopens a completed removal without requesting deleted transaction payloads', async () => {
+  const job = await createAuthorizationMaintenanceJob(user, {
+    appID: address(1),
+    delegateID: address(2),
+    grantIDs: ['aa'.repeat(32)],
+    users: [user],
+    values: ['large removed credential'],
+  });
+  await updateAuthorizationJob(job.id, {
+    status: 'complete',
+    transactions: {'remove-grants': receipt()},
+  });
+  const saved = await getAuthorizationJob(job.id);
+  expect(saved.transactions['remove-grants'].rawTx).toBeUndefined();
+  expect(saved.targets.values).toBeUndefined();
+  mockConfirm.mockClear();
+  mockLoadCredentials.mockClear();
+
+  await expect(reconcileAuthorizationJob(job.id)).resolves.toMatchObject({
+    status: 'complete',
+  });
+  expect(mockConfirm).not.toHaveBeenCalled();
+  expect(mockLoadCredentials).not.toHaveBeenCalled();
 });
 
 it('notifies with real SDK shared-storage response codecs and retries the exact confirmed grant response', async () => {
@@ -1686,9 +1746,7 @@ it('returns both results and reuses the exact signed combined response after a f
     }).outcome,
   ).toBe(AppAuthorizationOutcome.SUCCESS);
   expect(response.details[1].data.data.hasEncryptedData()).toBe(true);
-  expect(saved.appEncryptionResponse.requestHash).toBe(
-    request.getRawDataSha256().toString('hex'),
-  );
+  expect(saved.appEncryptionResponse).toBeUndefined();
   mockDeliver
     .mockRejectedValueOnce(new Error('Offline'))
     .mockResolvedValueOnce(undefined);

@@ -240,8 +240,8 @@ test('persists the complete approval with its signed receipt after fee consent a
 
   expect(beforeSend).toHaveBeenCalledTimes(1);
   expect(mockJob.status).toBe('waiting_for_grant_confirmation');
-  expect(mockJob.grantTransaction).toEqual(mockJob.transactions.grant);
-  expect(mockJob.grantTransaction.status).toBe('submitted');
+  expect(mockJob.grantTransaction).toBeUndefined();
+  expect(mockJob.transactions.grant.status).toBe('submitted');
 });
 
 test('rejects a mismatched storage private key before preparing or signing', async () => {
@@ -606,4 +606,49 @@ test('does not accept a mined transaction in a replaced active-chain block', asy
   expect(
     await confirmAuthorizationTransaction({rawTx, txid, systemId: 'chain'}),
   ).toBe(false);
+});
+
+test('confirms a compact receipt by hashing fetched bytes and checking active-chain inclusion', async () => {
+  const {getTransaction, getBlock} = require('../../api/channels/vrpc/callCreators');
+  const {confirmAuthorizationTransaction} = require('../../appAuthorization/transactions');
+  getTransaction.mockResolvedValue({
+    result: {confirmations: 2, txid, hex: rawTx, blockhash: 'active-block'},
+  });
+  getBlock
+    .mockResolvedValueOnce({
+      result: {hash: 'active-block', height: 10, confirmations: 2, tx: [txid]},
+    })
+    .mockResolvedValueOnce({
+      result: {hash: 'active-block', height: 10, confirmations: 2},
+    });
+
+  await expect(confirmAuthorizationTransaction({txid, systemId: 'chain'}))
+    .resolves.toBe(true);
+  expect(getBlock).toHaveBeenNthCalledWith(2, 'chain', '10', 1);
+});
+
+test('rejects RPC transaction bytes that do not hash to the retained transaction ID', async () => {
+  const {getTransaction, getBlock} = require('../../api/channels/vrpc/callCreators');
+  const {confirmAuthorizationTransaction} = require('../../appAuthorization/transactions');
+  const claimedID = 'f'.repeat(64);
+  getTransaction.mockResolvedValue({
+    result: {confirmations: 1, txid: claimedID, hex: rawTx, blockhash: 'block'},
+  });
+
+  await expect(confirmAuthorizationTransaction({txid: claimedID, systemId: 'chain'}))
+    .rejects.toThrow('does not match');
+  expect(getBlock).not.toHaveBeenCalled();
+});
+
+test('does not rebuild or rebroadcast a compact completed transaction after lost confirmation', async () => {
+  const {getTransaction} = require('../../api/channels/vrpc/callCreators');
+  const {broadcastPendingTransactions} = require('../../spendableKey/durableBroadcast');
+  mockJob.transactions = {grant: {txid, systemId: 'chain', status: 'submitted'}};
+  getTransaction.mockResolvedValue({error: {code: -5}});
+
+  await expect(submitAuthorizationIdentityUpdate('job', {...user, receiptKey: 'grant'}))
+    .rejects.toThrow('no longer confirmed');
+  expect(broadcastPendingTransactions).not.toHaveBeenCalled();
+  expect(mockCreateUpdate).not.toHaveBeenCalled();
+  expect(mockSign).not.toHaveBeenCalled();
 });

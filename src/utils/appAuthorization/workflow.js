@@ -78,7 +78,6 @@ import {
 const approvalMayRemain = job =>
   !!(
     job.transactions?.[GRANT_RECEIPT_KEY] ||
-    job.grantTransaction ||
     job.grantConfirmed ||
     (job.responseHex && job.outcome !== AppAuthorizationOutcome.CANCELLED)
   );
@@ -795,7 +794,6 @@ export const reconcileAuthorizationJob = async (jobId, options) => {
       current => ({
         ...current,
         grantConfirmed: true,
-        grantTransaction: receipt,
         ...(recoveredGift
           ? {giftConfirmed: true, unresolvedGiftIdentities: []}
           : {}),
@@ -1147,6 +1145,7 @@ export const deliverAuthorizationResponse = async (jobId, options) => {
 const REMOVAL_RECEIPT_KEY = 'remove-grants';
 
 const reconcileAuthorizationRemoval = async (job, context) => {
+  if (job.status === STATUS.COMPLETE) return summarizeAuthorizationJob(job);
   const receipt = job.transactions?.[REMOVAL_RECEIPT_KEY];
   if (!receipt || !(await confirmAuthorizationTransaction(receipt, context)))
     return summarizeAuthorizationJob(job);

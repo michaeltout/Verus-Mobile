@@ -117,6 +117,22 @@ const encryptedResult = (byte = 1) => ({
     }),
   }),
 });
+const signedResponse = (request, details) => {
+  const response = new GenericResponse({
+    details,
+    requestHash: request.getRawDataSha256(),
+    appOrDelegatorID: request.appOrDelegatorID,
+    createdAt: new BigNumber(101),
+    signature: new VerifiableSignatureData({
+      version: VerifiableSignatureData.DEFAULT_VERSION,
+      systemID: CompactIAddressObject.fromAddress(systemID),
+      identityID: CompactIAddressObject.fromAddress(user.identityID),
+      signatureAsVch: Buffer.from([3]),
+    }),
+  });
+  response.setSigned();
+  return response;
+};
 
 beforeEach(() => {
   mockData = {};
@@ -174,38 +190,45 @@ it('does not treat a saved operation as new approval after process restart', asy
   ).rejects.toThrow(/already started/);
 });
 
-it('retains a transaction receipt before broadcast and reuses exact final response bytes', async () => {
+it('compacts a completed receipt while preserving replay protection and exact response retries', async () => {
   const request = makeRequest();
   const operation = await reserveDelegatedExecution(request, user, 'payment');
-  const receipt = {txid: '22'.repeat(32), rawTx: '0102', systemId: systemID};
+  const receipt = {
+    txid: '22'.repeat(32),
+    rawTx: '0102',
+    systemId: systemID,
+    inputs: [{rawTransaction: '0304'}],
+    fundingApproval: {txHex: '0506', unfundedTxHex: '0708'},
+  };
   await recordDelegatedTransaction(operation, 'payment', receipt);
   expect(
     mockData.delegatedOperations.operations[operation.id].steps.payment.receipt,
   ).toEqual(receipt);
   await reserveDelegatedExecution(request, user, 'response');
-  const response = new GenericResponse({
-    details: [
-      new DataResponseOrdinalVDXFObject({
-        data: new DataResponseDetails({
-          data: new DataDescriptor({
-            objectdata: Buffer.from('prepared response'),
-          }),
+  const before = mockData.delegatedOperations.operations[operation.id];
+  const response = signedResponse(request, [
+    new DataResponseOrdinalVDXFObject({
+      data: new DataResponseDetails({
+        data: new DataDescriptor({
+          objectdata: Buffer.from('prepared response'),
         }),
       }),
-    ],
-    requestHash: request.getRawDataSha256(),
-    appOrDelegatorID: request.appOrDelegatorID,
-    createdAt: new BigNumber(101),
-    signature: new VerifiableSignatureData({
-      version: VerifiableSignatureData.DEFAULT_VERSION,
-      systemID: CompactIAddressObject.fromAddress(systemID),
-      identityID: CompactIAddressObject.fromAddress(user.identityID),
-      signatureAsVch: Buffer.from([3]),
     }),
-  });
-  response.setSigned();
+  ]);
   await saveDelegatedResponse(request, user, response);
   const preparedBytes = response.toBuffer();
+  const completed = mockData.delegatedOperations.operations[operation.id];
+  expect(completed).toEqual({
+    ...before,
+    responseHex: preparedBytes.toString('hex'),
+    steps: {
+      ...before.steps,
+      payment: {
+        startedAt: before.steps.payment.startedAt,
+        receipt: {txid: receipt.txid, systemId: systemID},
+      },
+    },
+  });
   const restored = await loadDelegatedResponse(request, user);
   expect(restored.toBuffer()).toEqual(preparedBytes);
   let restarted;
@@ -215,6 +238,9 @@ it('retains a transaction receipt before broadcast and reuses exact final respon
   const resumed = await restarted.findPreparedDelegatedResponse(request);
   expect(resumed.user).toEqual(user);
   expect(resumed.response.toBuffer()).toEqual(preparedBytes);
+  await expect(
+    restarted.reserveDelegatedExecution(request, user, 'payment-again'),
+  ).rejects.toThrow(/already started/);
   await expect(
     reserveDelegatedExecution(request, user, 'payment-again'),
   ).rejects.toThrow(/already been executed/);
@@ -233,6 +259,72 @@ it('retains a transaction receipt before broadcast and reuses exact final respon
   await expect(findPreparedDelegatedResponse(request)).rejects.toThrow(
     /history/,
   );
+});
+
+it('keeps uncertain transaction recovery data until a final response is saved', async () => {
+  const request = makeRequest();
+  const operation = await reserveDelegatedExecution(request, user, 'payment');
+  const receipt = {
+    txid: '33'.repeat(32),
+    systemId: systemID,
+    rawTx: '0102',
+    status: 'prepared',
+    broadcastAttempted: true,
+    inputs: [{rawTransaction: '0304'}],
+    fundingApproval: {txHex: '0506'},
+  };
+  await recordDelegatedTransaction(operation, 'payment', receipt);
+  const pending = mockData.delegatedOperations.operations[operation.id];
+
+  const responseOperation = await reserveDelegatedExecution(
+    request,
+    user,
+    'response',
+  );
+  await releaseDelegatedSigningReservation(responseOperation, 'response');
+
+  expect(mockData.delegatedOperations.operations[operation.id]).toEqual(pending);
+  await expect(loadDelegatedResponse(request, user)).resolves.toBeNull();
+});
+
+it('drops an encryption step payload only after its exact final response is frozen', async () => {
+  const request = encryptionRequest();
+  const result = await saveDelegatedEncryptionResult(
+    request,
+    user,
+    1,
+    encryptedResult(),
+  );
+  const id = delegatedOperationID(request);
+  const step =
+    mockData.delegatedOperations.operations[id].steps['app-encryption:1'];
+  expect(step.resultHex).toBe(result.responseDetail.toBuffer().toString('hex'));
+
+  const operation = await reserveDelegatedExecution(request, user, 'response');
+  const response = signedResponse(request, [result.responseDetail]);
+  await saveDelegatedResponse(request, user, response);
+
+  expect(
+    mockData.delegatedOperations.operations[id].steps['app-encryption:1'],
+  ).toEqual({startedAt: step.startedAt});
+  const restored = await loadDelegatedResponse(request, user);
+  expect(restored.toBuffer()).toEqual(response.toBuffer());
+  await expect(loadDelegatedEncryptionResult(request, user, 1)).rejects.toThrow(
+    'other recorded effects',
+  );
+  await expect(
+    saveDelegatedEncryptionResult(request, user, 1, encryptedResult(2)),
+  ).rejects.toThrow('other recorded effects');
+  await expect(
+    releaseDelegatedSigningReservation(operation, 'response'),
+  ).rejects.toThrow('cannot be released');
+
+  let restarted;
+  jest.isolateModules(() => {
+    restarted = require('../../appAuthorization/delegatedOperations');
+  });
+  const resumed = await restarted.findPreparedDelegatedResponse(request);
+  expect(resumed.response.toBuffer()).toEqual(response.toBuffer());
 });
 
 it('does not load prepared responses through a different active wallet network', async () => {

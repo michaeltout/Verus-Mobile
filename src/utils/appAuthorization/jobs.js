@@ -24,6 +24,7 @@ const lastRefreshes = new Map();
 
 export {AUTHORIZATION_STATUS} from './constants';
 import {AUTHORIZATION_STATUS} from './constants';
+import {compactCompletedAuthorizationJob} from './completedRequests';
 
 const activeOperations = new Set();
 
@@ -89,7 +90,7 @@ export const summarizeAuthorizationJob = job => ({
     job.hasGift &&
     !!job.transactions?.grant &&
     !job.giftConfirmed,
-  grantTxid: job.grantTransaction?.txid,
+  grantTxid: job.transactions?.grant?.txid,
 });
 
 const readJobs = (data, context) => {
@@ -194,7 +195,7 @@ const writeJob = async (id, updater, context, create = false) => {
       const previous = jobs[id];
       if (!previous && !create)
         throw new Error('App authorization was not found in this wallet.');
-      const proposed = updater(previous);
+      let proposed = updater(previous);
       if (proposed?.then)
         throw new Error('Authorization storage updates must be synchronous.');
       if (previous) {
@@ -234,6 +235,11 @@ const writeJob = async (id, updater, context, create = false) => {
             'A prepared authorization encryption result cannot be changed.',
           );
         }
+      }
+      // Save compact records with the frozen response so transaction data does
+      // not accumulate while notification is pending. No extra write is needed.
+      proposed = compactCompletedAuthorizationJob(proposed);
+      if (previous) {
         // Reconciliation often observes the same chain state. Returning the
         // existing service document skips encryption and leaves its revision
         // unchanged, so subscribers do not reload an unchanged job.

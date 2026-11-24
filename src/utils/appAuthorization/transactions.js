@@ -102,7 +102,7 @@ const rpcResult = response => {
 export const confirmAuthorizationTransaction = async (receipt, options) => {
   const context = captureAuthorizationContext(options);
   assertAuthorizationContext(context);
-  if (!receipt?.systemId || !receipt.txid || !receipt.rawTx)
+  if (!receipt?.systemId || !receipt.txid)
     throw new Error('The saved authorization transaction is incomplete.');
   const coin = CoinDirectory.getBasicCoinObj(receipt.systemId);
   if (coin?.system_id !== receipt.systemId || !coin.vrpc_endpoints?.[0]) {
@@ -122,7 +122,8 @@ export const confirmAuthorizationTransaction = async (receipt, options) => {
     return false;
   if (
     transaction.txid !== receipt.txid ||
-    transaction.hex !== receipt.rawTx ||
+    Transaction.fromHex(transaction.hex, networks.verus).getId() !== receipt.txid ||
+    (receipt.rawTx != null && transaction.hex !== receipt.rawTx) ||
     !transaction.blockhash
   ) {
     throw new Error(
@@ -204,7 +205,6 @@ export const submitAuthorizationIdentityUpdate = async (
         },
         ...(receiptKey === GRANT_RECEIPT_KEY && receipt.status === 'submitted'
           ? {
-              grantTransaction: savedReceipt,
               grantConfirmed: false,
               status:
                 current.status === AUTHORIZATION_STATUS.CANCELLED ||
@@ -220,6 +220,11 @@ export const submitAuthorizationIdentityUpdate = async (
   const saved = job.transactions?.[receiptKey];
   if (saved) {
     if (await confirmAuthorizationTransaction(saved, context)) return saved;
+    if (!saved.rawTx) {
+      throw new Error(
+        'The completed authorization transaction is no longer confirmed. Review current app access before submitting another update.',
+      );
+    }
     // Existing receipt reconciliation occurs even after the request expires;
     // beforeSend still prohibits a fresh handoff after its signed deadline.
     await broadcastPendingTransactions({

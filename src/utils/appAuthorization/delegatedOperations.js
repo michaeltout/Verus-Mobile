@@ -15,6 +15,7 @@ import {VERUSID_SERVICE_ID} from '../constants/services';
 import {sha256} from '../crypto/hash';
 import {modifyServiceStoredDataForUser} from '../../actions/actions/services/dispatchers/services';
 import {authorizationContext} from './controls';
+import {compactCompletedDelegatedOperation} from './completedRequests';
 import {queueServiceStorageWrite} from '../asyncStore/passwordProtectedStorageQueue';
 
 const COLLECTION_VERSION = 1;
@@ -353,12 +354,16 @@ const updateOperation = async (operation, update) => {
           'The delegated operation no longer belongs to this request.',
         );
       }
+      // Once the final response is frozen, retries use those exact bytes. Keep
+      // each consumed step, but release its redundant result and receipt data
+      // in the same write that saves the response.
+      const saved = compactCompletedDelegatedOperation(update(previous));
       return {
         ...data,
         delegatedOperations: {
           version: COLLECTION_VERSION,
           accountHash,
-          operations: {...operations, [id]: update(previous)},
+          operations: {...operations, [id]: saved},
         },
       };
     },
