@@ -5,6 +5,7 @@ import {
   INIT_VERUSID_CHANNEL_FINISH,
   SET_PENDING_VERUSIDS,
   SET_IDENTITY_REGISTRATION_JOBS,
+  SET_APP_AUTHORIZATION_JOBS,
 } from '../../utils/constants/storeType'
 
 export const channelStore_verusid = (state = {
@@ -12,6 +13,7 @@ export const channelStore_verusid = (state = {
   watchedVerusIds: {},
   pendingIds: {},
   registrationJobs: {},
+  authorizationJobs: {},
   serviceChannelOpen: true,
 }, action) => {
   switch (action.type) {
@@ -38,6 +40,7 @@ export const channelStore_verusid = (state = {
         watchedVerusIds: {},
         pendingIds: {},
         registrationJobs: {},
+        authorizationJobs: {},
         serviceChannelOpen: false,
       }
     case SET_WATCHED_VERUSIDS:
@@ -54,6 +57,11 @@ export const channelStore_verusid = (state = {
       return {
         ...state,
         registrationJobs: action.payload.registrationJobs,
+      }
+    case SET_APP_AUTHORIZATION_JOBS:
+      return {
+        ...state,
+        authorizationJobs: action.payload.authorizationJobs,
       }
     default:
       return state;

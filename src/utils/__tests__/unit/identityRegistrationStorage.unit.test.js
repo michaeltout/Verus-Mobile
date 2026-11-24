@@ -8,6 +8,9 @@ jest.mock('../../../store', () => ({
   default: {dispatch: mockDispatch, getState: () => mockState},
 }));
 jest.mock('../../asyncStore/serviceStoredDataStorage', () => ({
+  loadServiceStoredData: jest.fn(async () => ({
+    [mockState.authentication.activeAccount.accountHash]: {...mockStoredData},
+  })),
   loadServiceStoredDataForUser: jest.fn(async () => ({...mockStoredData})),
   storeServiceStoredDataForUser: jest.fn(async data => {
     await Promise.resolve();
@@ -58,6 +61,7 @@ const {
 } = require('../../../actions/actions/services/dispatchers/verusid/registration');
 const {
   linkVerusId,
+  markVerusIdAsStorage,
   unlinkVerusId,
   setRequestedVerusId,
   deleteProvisionedIds,
@@ -68,7 +72,7 @@ const {SET_IDENTITY_REGISTRATION_JOBS, SET_WATCHED_VERUSIDS, SIGN_OUT_COMPLETE, 
 const {initVerusIdWallet, updateVerusIdWallet} = jest.requireActual('../../../actions/actions/channels/verusid/dispatchers/VerusidWalletReduxManager');
 const {channelStore_verusid} = require('../../../reducers/channelStores/verusid');
 const {requestServiceStoredData} = require('../../auth/authBox');
-const {loadServiceStoredDataForUser, storeServiceStoredDataForUser} = require('../../asyncStore/serviceStoredDataStorage');
+const {loadServiceStoredData, storeServiceStoredDataForUser} = require('../../asyncStore/serviceStoredDataStorage');
 const {registrationNotifications} = require('../../identityRegistration/notifications');
 const {decodeRegistrationJob, encodeRegistrationJob} = require('../../identityRegistration/storage');
 const {makeRegistrationJob, makePreparedRegistration} = require('../../../../debug/fixtures/identityRegistration');
@@ -133,6 +137,109 @@ describe('durable identity registration storage', () => {
       linked_ids: {[chain]: {...existing.linked_ids[chain], [identityAddress]: savedName}},
     });
     expect(require('../../api/channels/verusid/callCreators').getIdentity).not.toHaveBeenCalled();
+  });
+
+  it('classifies storage and unlinks it in one encrypted write while preserving other records', async () => {
+    const initial = {
+      linked_ids: {
+        VRSC: {iStorage: 'Shared@', iUser: 'User@'},
+        VRSCTEST: {iStorage: 'Different network.VRSCTEST@'},
+      },
+      storage_ids: {
+        VRSC: {
+          iOtherStorage: {name: 'Other@', userIdentityIDs: ['iOtherUser']},
+        },
+        VRSCTEST: {
+          iTestStorage: {
+            name: 'Test.VRSCTEST@',
+            userIdentityIDs: ['iTestUser'],
+          },
+        },
+      },
+      pending_ids: {VRSC: {iPending: {createdAt: 1}}},
+      registration_jobs: collection(),
+      authorization_jobs: {preserved: true},
+    };
+    mockStoredData = {
+      [VERUSID_SERVICE_ID]: JSON.stringify(initial),
+      unrelatedService: 'unrelated encrypted data',
+    };
+
+    await markVerusIdAsStorage(
+      'iStorage',
+      'Shared.VRSC@',
+      'VRSC',
+      'iUser',
+      context(),
+    );
+
+    const expected = {
+      ...initial,
+      linked_ids: {...initial.linked_ids, VRSC: {iUser: 'User@'}},
+      storage_ids: {
+        ...initial.storage_ids,
+        VRSC: {
+          ...initial.storage_ids.VRSC,
+          iStorage: {name: 'Shared@', userIdentityIDs: ['iUser']},
+        },
+      },
+    };
+    expect(storeServiceStoredDataForUser).toHaveBeenCalledTimes(1);
+    // There is no intermediate persisted state that is both linked and storage.
+    expect(
+      JSON.parse(
+        storeServiceStoredDataForUser.mock.calls[0][0][VERUSID_SERVICE_ID],
+      ),
+    ).toEqual(expected);
+    expect(data()).toEqual(expected);
+    expect(mockStoredData.unrelatedService).toBe('unrelated encrypted data');
+  });
+
+  it('serializes storage classification, deduplicates users and prevents concurrent relinking', async () => {
+    const requestContext = context();
+    const operations = [
+      markVerusIdAsStorage(
+        'iStorage',
+        'Shared.VRSC@',
+        'VRSC',
+        'iUserOne',
+        requestContext,
+      ),
+      markVerusIdAsStorage(
+        'iStorage',
+        'Shared.VRSC@',
+        'VRSC',
+        'iUserTwo',
+        requestContext,
+      ),
+      markVerusIdAsStorage(
+        'iStorage',
+        'Shared.VRSC@',
+        'VRSC',
+        'iUserOne',
+        requestContext,
+      ),
+      linkVerusId('iOtherUser', 'Other.VRSC@', 'VRSC', requestContext),
+      linkVerusId('iStorage', 'Stale name.VRSC@', 'VRSC', requestContext),
+    ];
+    const results = await Promise.all(operations);
+
+    expect(results[3]).toBe(true);
+    expect(results[4]).toBe(false);
+    expect(data().linked_ids.VRSC).toEqual({iOtherUser: 'Other@'});
+    expect(data().storage_ids.VRSC.iStorage).toEqual({
+      name: 'Shared@',
+      userIdentityIDs: ['iUserOne', 'iUserTwo'],
+    });
+    await expect(
+      linkVerusId('iStorage', 'Shared.VRSC@', 'VRSC', requestContext),
+    ).resolves.toBe(false);
+    expect(data().linked_ids.VRSC).not.toHaveProperty('iStorage');
+    // The same address on another chain is classified separately.
+    await expect(
+      linkVerusId('iStorage', 'Shared.VRSCTEST@', 'VRSCTEST', requestContext),
+    ).resolves.toBe(true);
+    expect(data().linked_ids.VRSCTEST).toEqual({iStorage: 'Shared.VRSCTEST@'});
   });
 
   it('preserves reservations across every shared service writer and explicit provider deletion', async () => {
@@ -203,6 +310,15 @@ describe('durable identity registration storage', () => {
     expect(decodeRegistrationJob.mock.calls.every(([, options]) => options.summaryOnly)).toBe(true);
     expect(mockReconcile).toHaveBeenCalledTimes(2);
     expect(storeServiceStoredDataForUser).not.toHaveBeenCalled();
+  });
+
+  it('reads and publishes an empty registration collection only once during refresh', async () => {
+    await expect(refreshRegistrationJobs(context())).resolves.toEqual({});
+    expect(requestServiceStoredData).toHaveBeenCalledTimes(1);
+    expect(mockDispatch.mock.calls.filter(([action]) =>
+      action.type === SET_IDENTITY_REGISTRATION_JOBS,
+    )).toHaveLength(1);
+    expect(mockReconcile).not.toHaveBeenCalled();
   });
 
   it('expands only the selected job during a protected read or update', async () => {
@@ -505,7 +621,9 @@ describe('durable identity registration storage', () => {
     expect(decodeRegistrationJob).not.toHaveBeenCalled();
     expect(data()).toEqual(remaining);
     expect(mockStoredData.otherService).toBe('unrelated encrypted service data');
-    expect(storeServiceStoredDataForUser).toHaveBeenCalledWith(mockStoredData, 'account-a');
+    expect(storeServiceStoredDataForUser).toHaveBeenCalledWith(
+      mockStoredData, 'account-a', expect.any(Object),
+    );
     expect(lastSummary()).toEqual({
       type: SET_IDENTITY_REGISTRATION_JOBS,
       payload: {registrationJobs: {}},
@@ -588,7 +706,7 @@ describe('durable identity registration storage', () => {
     await saveRegistrationJob(job(), context());
     const original = mockStoredData[VERUSID_SERVICE_ID];
     let finishRead;
-    loadServiceStoredDataForUser.mockReturnValueOnce(new Promise(resolve => {finishRead = resolve;}));
+    loadServiceStoredData.mockReturnValueOnce(new Promise(resolve => {finishRead = resolve;}));
     storeServiceStoredDataForUser.mockClear();
     mockDispatch.mockClear();
     const requestContext = {...context(), signal: {aborted: false}};
@@ -601,7 +719,7 @@ describe('durable identity registration storage', () => {
     } else {
       requestContext.signal.aborted = true;
     }
-    finishRead({...mockStoredData});
+    finishRead({'account-a': {...mockStoredData}});
 
     await expect(clearing).rejects.toMatchObject({code: 'SESSION_CHANGED'});
     expect(storeServiceStoredDataForUser).not.toHaveBeenCalled();
@@ -627,7 +745,9 @@ describe('durable identity registration storage', () => {
     finishWrite();
 
     await expect(clearing).rejects.toMatchObject({code: 'SESSION_CHANGED'});
-    expect(storeServiceStoredDataForUser).toHaveBeenLastCalledWith(mockStoredData, 'account-a');
+    expect(storeServiceStoredDataForUser).toHaveBeenLastCalledWith(
+      mockStoredData, 'account-a', expect.any(Object),
+    );
     expect(mockDispatch).not.toHaveBeenCalled();
   });
 
@@ -766,14 +886,14 @@ describe('durable identity registration storage', () => {
   it('abandons deletion when the account changes during the protected storage read', async () => {
     const saved = await saveRegistrationJob({...job(), registration: undefined}, context());
     let finishRead;
-    loadServiceStoredDataForUser.mockReturnValueOnce(new Promise(resolve => {finishRead = resolve;}));
+    loadServiceStoredData.mockReturnValueOnce(new Promise(resolve => {finishRead = resolve;}));
     storeServiceStoredDataForUser.mockClear();
     mockDispatch.mockClear();
     const deleting = removeRegistrationJob(saved.id, saved.revision, context());
     await new Promise(resolve => setImmediate(resolve));
     mockState.authentication.activeAccount = {accountHash: 'account-b'};
     mockState.authentication.sessionEpoch++;
-    finishRead({...mockStoredData});
+    finishRead({'account-a': {...mockStoredData}});
     await expect(deleting).rejects.toMatchObject({code: 'SESSION_CHANGED'});
     expect(storeServiceStoredDataForUser).not.toHaveBeenCalled();
     expect(mockDispatch).not.toHaveBeenCalled();

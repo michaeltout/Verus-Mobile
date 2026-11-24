@@ -7,6 +7,9 @@ import {
 } from 'react-native';
 import { Checkbox, Text } from 'react-native-paper';
 import Button from '../../../components/Button';
+import RequestSigner, {
+  getRequestSignerLabel,
+} from '../../../components/RequestSigner';
 import { useSelector } from 'react-redux';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {GenericResponse} from 'verus-typescript-primitives';
@@ -32,6 +35,7 @@ import {ensureGenericResponseSigner} from '../../../utils/deeplink/genericRespon
 import {userDataRequestedSignerMatchesIdentity} from '../../../utils/deeplink/userData/requestedSigner';
 import {getMatchingRequestAccounts} from '../../../utils/deeplink/requestAccounts';
 import {convertFqnToDisplayFormat} from '../../../utils/fullyqualifiedname';
+import {assertAppEncryptionAuthorization, scopedRequestContext} from '../../../utils/deeplink/validator/appEncryptionAuthorization';
 
 const truncateAddress = addr => {
   if (!addr || addr.length <= 14) return addr;
@@ -129,6 +133,8 @@ const UserDataRequestInfo = props => {
     signerSystemID,
     signerSystemName,
     signerIdentityID,
+    appOrDelegatorID,
+    appOrDelegatorFqn,
     sigtime,
     credentialRequests = [],
     requestScope,
@@ -172,7 +178,14 @@ const UserDataRequestInfo = props => {
     () => credentialRequests.map(item => item.key),
     [credentialRequests],
   );
-  const requesterLabel = signerFqn || signerIdentityID || 'Requester';
+  const requesterProps = {
+    signerFqn,
+    signerIdentityID,
+    appOrDelegatorID,
+    appOrDelegatorFqn,
+    request,
+  };
+  const requesterLabel = getRequestSignerLabel(requesterProps);
   const sigDateString = sigtime ? unixToDate(sigtime) : null;
   const requestedSignerUnavailable =
     linkedIdsLoaded &&
@@ -405,6 +418,13 @@ const UserDataRequestInfo = props => {
       const coinObj = CoinDirectory.findCoinObj(selectedIdentity.chainId);
       if (!coinObj) throw new Error("Unsupported signing chain.");
 
+      if (request.hasAppOrDelegatorID()) {
+        const user = {identityID: selectedIdentity.iAddress, systemID: coinObj.system_id};
+        await assertAppEncryptionAuthorization(request, user, {
+          ...scopedRequestContext(request, user), executionStep: `user-data:${detailIndex}`,
+        });
+      }
+
       const updatedResponse = response || new GenericResponse();
       const detail = request.getDetails(detailIndex);
       const responseDetail = buildUserDataResponse({
@@ -518,7 +538,10 @@ const UserDataRequestInfo = props => {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Requester</Text>
           </View>
-          <DetailRow title={requesterLabel} subtitle={signerIdentityID} />
+          <DetailRow
+            title={<RequestSigner {...requesterProps} />}
+            subtitle={signerIdentityID}
+          />
           <DetailRow
             title={signerSystemName || signerSystemID}
             subtitle={sigDateString ? `Signed ${sigDateString}` : 'Signed request'}

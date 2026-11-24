@@ -5,8 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const LIBRARIES = [
-  ['verus-typescript-primitives', 'VerusCoin/verus-typescript-primitives', 'master'],
-  ['verusid-ts-client', 'VerusCoin/verusid-ts-client', 'master'],
+  ['verus-typescript-primitives', 'michaeltout/verus-typescript-primitives', 'app-authorization-request'],
+  ['verusid-ts-client', 'michaeltout/verusid-ts-client', 'app-authorization-request'],
   ['verusd-rpc-ts-client', 'VerusCoin/verusd-rpc-ts-client', 'main'],
   // BitGoJS master is the upstream monorepo, not the Verus UTXO package.
   ['@bitgo/utxo-lib', 'VerusCoin/BitGoJS', 'utxo-lib-verus'],

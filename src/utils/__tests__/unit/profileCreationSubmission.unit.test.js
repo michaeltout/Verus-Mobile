@@ -57,6 +57,7 @@ describe('profile creation submissions', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockCreateProfileFromSeed.mockReset();
+    delete mockState.deeplink;
     jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -74,6 +75,14 @@ describe('profile creation submissions', () => {
     });
     return renderer.root.findByType('CreateWallet').props.createProfile;
   };
+
+  it('sets up permanent shielded keys from the user mnemonic during authorization onboarding', async () => {
+    mockState.deeplink = {passthrough: {resumeAuthorizationAfterSetup: true}};
+    const seed = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    const submit = renderProfile();
+    await act(async () => submit(seed, false, false));
+    expect(mockCreateProfileFromSeed).toHaveBeenCalledWith(expect.objectContaining({seed, includeDlightSeed: true}));
+  });
 
   it('starts only one creation for repeated callbacks before the next render', async () => {
     const pending = deferred();

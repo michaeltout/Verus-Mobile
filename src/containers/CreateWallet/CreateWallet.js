@@ -5,9 +5,9 @@ import ImportWalletStackScreens from './Forms/ImportWallet/ImportWallet';
 import WalletIntro from './Forms/WalletIntro';
 const CreateWalletStack = createStackNavigator();
 
-export default function CreateWalletStackScreens({ navigation, createProfile }) {
+export default function CreateWalletStackScreens({ navigation, createProfile, initialTestProfile = false }) {
   const [newSeed, setNewSeed] = useState(null)
-  const [testProfile, setTestProfile] = useState(false)
+  const [testProfile, setTestProfile] = useState(initialTestProfile)
   const [importedSeed, setImportedSeed] = useState(null)
 
   const completeSeedSetup = (asNew, useSeedAsZ, importedSeedOverride) => {

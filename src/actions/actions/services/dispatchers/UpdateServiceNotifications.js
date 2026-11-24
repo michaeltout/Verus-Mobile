@@ -7,6 +7,7 @@ import {
 
   import { checkVerusIdNotificationsForUpdates } from "./verusid/verusid";
   import {refreshRegistrationJobs} from './verusid/registration';
+  import {refreshAuthorizationJobs} from '../../../../utils/appAuthorization/jobs';
 
   const fetchChannels = () => {
     return {
@@ -14,6 +15,7 @@ import {
         await Promise.all([
           checkVerusIdNotificationsForUpdates(requestContext),
           refreshRegistrationJobs(requestContext),
+          refreshAuthorizationJobs(requestContext),
         ]);
       },
     };

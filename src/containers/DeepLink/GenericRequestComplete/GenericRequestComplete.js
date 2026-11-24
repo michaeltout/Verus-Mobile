@@ -17,15 +17,12 @@ import Button from '../../../components/Button';
 import { CommonActions } from '@react-navigation/native';
 import { useDispatch, useSelector } from 'react-redux';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import base64url from 'base64url';
-import axios from 'axios';
 import { URL } from 'react-native-url-polyfill';
 import AnimatedSuccessCheckmark from '../../../components/AnimatedSuccessCheckmark';
 import AnimatedActivityIndicatorBox from '../../../components/AnimatedActivityIndicatorBox';
 import GradientButton from '../../../components/GradientButton';
 import Colors from '../../../globals/colors';
 import { resetDeeplinkData } from '../../../actions/actionCreators';
-import { openUrl } from '../../../utils/linking';
 import store from '../../../store';
 import {captureSessionScope, sessionScopeIsCurrent} from '../../../actions/actions/updates/sessionRequests';
 import { getAppEncryptionSessionKey } from '../../../utils/deeplink/appEncryptionSession';
@@ -34,9 +31,7 @@ import { signGenericResponse } from '../../../utils/api/channels/vrpc/callCreato
 import {
   GenericRequest,
   GenericResponse,
-  GENERIC_RESPONSE_DEEPLINK_VDXF_KEY,
   IDENTITY_UPDATE_RESPONSE_VDXF_KEY,
-  ResponseURI,
   VERUS_MOBILE_GENERIC_REQUEST_HANDLER_ID,
 } from 'verus-typescript-primitives';
 import { verifyGenericResponse } from '../../../utils/api/channels/vrpc/requests/verifyGenericResponse';
@@ -46,10 +41,11 @@ import { genericRequestCompleteStyles as styles } from '../../../styles';
 import { markPendingDeeplinkComplete } from '../../../utils/deeplink/pendingDeeplinkStorage';
 import { prepareGenericResponseForSigning } from '../../../utils/deeplink/genericResponse/prepareGenericResponseForSigning';
 import { encryptGenericResponseDetails } from '../../../utils/deeplink/genericResponse/encryptGenericResponseDetails';
-import {
-  assertNoPlaintextAppEncryptionResponse,
-  assertSecurePostResponseUri,
-} from '../../../utils/deeplink/genericResponse/responseDeliverySecurity';
+import {deliverGenericResponse, getGenericResponseUri, isPostResponseUri, isRedirectResponseUri} from '../../../utils/deeplink/genericResponse/deliverGenericResponse';
+import {loadDelegatedResponse} from '../../../utils/appAuthorization/delegatedOperations';
+import {getGenericResponseSigner} from '../../../utils/deeplink/genericResponse/ensureGenericResponseSigner';
+import {assertExperimentalGenericRequestAllowed} from '../../../utils/deeplink/experimentalDeeplinks';
+import {assertNoPlaintextAppEncryptionResponse} from '../../../utils/deeplink/genericResponse/responseDeliverySecurity';
 import {
   performAfterAuthenticationExpiryCheck,
   signAfterAuthenticationExpiryCheck,
@@ -69,6 +65,8 @@ const GenericRequestComplete = props => {
   const [loading, setLoading] = useState(false);
   const [postFailed, setPostFailed] = useState(false);
   const [txidCopied, setTxidCopied] = useState(false);
+  const [exportResponseHex, setExportResponseHex] = useState(null);
+  const [responseCopied, setResponseCopied] = useState(false);
   const txidCopyTimeoutRef = useRef(null);
   const mounted = useRef(true);
   const pending = useRef(null);
@@ -91,6 +89,8 @@ const GenericRequestComplete = props => {
     pending.current = null;
     setLoading(false);
     setPostFailed(false);
+    setExportResponseHex(null);
+    setResponseCopied(false);
     return () => { mounted.current = false; };
   }, [source]);
 
@@ -118,83 +118,16 @@ const GenericRequestComplete = props => {
     }
   };
 
-  const isPostUri = (uri) => {
-    if (uri == null || uri.type == null) return false;
-    if (uri.type.eq) return uri.type.eq(ResponseURI.TYPE_POST);
-    return Number(uri.type) === ResponseURI.TYPE_POST.toNumber();
-  };
-
-  const isRedirectUri = (uri) => {
-    if (uri == null || uri.type == null) return false;
-    if (uri.type.eq) return uri.type.eq(ResponseURI.TYPE_REDIRECT);
-    return Number(uri.type) === ResponseURI.TYPE_REDIRECT.toNumber();
-  };
-
-  const getResponseUri = (responseUris) => {
-    if (responseUris == null || responseUris.length === 0) return null;
-
-    const postUri = responseUris.find(uri => isPostUri(uri));
-    if (postUri) return postUri;
-
-    const redirectUri = responseUris.find(uri => isRedirectUri(uri));
-    return redirectUri || null;
-  };
-
-  const handleResponseUri = async (request, response) => {
-    if (!request) return;
-
-    const responseUris = request.responseURIs || [];
-    const responseUri = getResponseUri(responseUris);
-
-    if (responseUri == null) return;
-
-    assertNoPlaintextAppEncryptionResponse(response);
-
-    if (isPostUri(responseUri)) {
-      const responseBuffer = response.toBuffer();
-      const secureResponseUri = assertSecurePostResponseUri(
-        responseUri.getUriString(),
-      );
-
-      try {
-        await axios.post(
-          secureResponseUri,
-          responseBuffer,
-          { headers: { 'Content-Type': 'application/octet-stream' } }
-        );
-      } catch (error) {
-        const status = error?.response?.status;
-        const statusSuffix = status != null ? ` (HTTP ${status})` : '';
-        const postError = new Error(
-          `Failed to send the response to the requester${statusSuffix}.`
-        );
-
-        postError.isResponsePostError = true;
-        postError.cause = error;
-        throw postError;
-      }
-    } else if (isRedirectUri(responseUri)) {
-      const url = new URL(responseUri.getUriString());
-      url.searchParams.set(
-        GENERIC_RESPONSE_DEEPLINK_VDXF_KEY.vdxfid,
-        base64url(response.toBuffer())
-      );
-
-      openUrl(url.toString());
-    }
-  };
-
   const responseNotice = useMemo(() => {
     if (!requestBufferString || !responseBufferString) return null;
 
     try {
       const request = new GenericRequest();
       request.fromBuffer(Buffer.from(requestBufferString, 'hex'), 0);
-
-      const responseUri = getResponseUri(request.responseURIs || []);
+      const responseUri = getGenericResponseUri(request.responseURIs || []);
       if (!responseUri) return null;
 
-      if (isPostUri(responseUri)) {
+      if (isPostResponseUri(responseUri)) {
         const url = new URL(responseUri.getUriString());
         const responseLabel = request.hasEncryptResponseToAddress()
           ? "Your encrypted response"
@@ -202,7 +135,7 @@ const GenericRequestComplete = props => {
         return `${responseLabel} will be sent to ${url.protocol}//${url.host}`;
       }
 
-      if (isRedirectUri(responseUri)) {
+      if (isRedirectResponseUri(responseUri)) {
         const url = new URL(responseUri.getUriString());
         return `You'll be redirected to ${url.protocol}//${url.host} to finish`;
       }
@@ -304,6 +237,13 @@ const GenericRequestComplete = props => {
     try {
       setLoading(true);
 
+      if (exportResponseHex) {
+        await markSavedPendingRequestComplete();
+        assertActive();
+        completeRequest();
+        return;
+      }
+
       if (!requestBufferString || !responseBufferString) {
         await markSavedPendingRequestComplete();
         assertActive();
@@ -317,14 +257,23 @@ const GenericRequestComplete = props => {
 
       const response = new GenericResponse();
       response.fromBuffer(Buffer.from(responseBufferString, 'hex'), 0);
-
-      await encryptGenericResponseDetails({ request, response });
+      const requestContext = {request, sessionScope: source.sessionScope, assertActive};
+      assertExperimentalGenericRequestAllowed(request, store.getState());
+      const user = getGenericResponseSigner(response);
+      const savedResponse = request.hasAppOrDelegatorID() && user
+        ? await loadDelegatedResponse(request, user, requestContext)
+        : null;
       assertActive();
-      prepareGenericResponseForSigning({
-        request,
-        response,
-        handledBy: VERUS_MOBILE_GENERIC_REQUEST_HANDLER_ID,
-      });
+
+      if (!savedResponse) {
+        await encryptGenericResponseDetails({ request, response });
+        assertActive();
+        prepareGenericResponseForSigning({
+          request,
+          response,
+          handledBy: VERUS_MOBILE_GENERIC_REQUEST_HANDLER_ID,
+        });
+      }
       if (response.signature == null) {
         await markSavedPendingRequestComplete();
         assertActive();
@@ -337,15 +286,11 @@ const GenericRequestComplete = props => {
       // Canonical system IDs also resolve registered PBaaS signing chains.
       const coinObj = CoinDirectory.getBasicCoinObj(signerSystemID);
 
-      const signedResponse = await signAfterAuthenticationExpiryCheck(
+      const signedResponse = savedResponse || await signAfterAuthenticationExpiryCheck(
         request,
         () => {
           assertActive();
-          return signGenericResponse(coinObj, response, {
-            request,
-            sessionScope: source.sessionScope,
-            assertActive,
-          });
+          return signGenericResponse(coinObj, response, requestContext);
         },
       );
       assertActive();
@@ -356,13 +301,28 @@ const GenericRequestComplete = props => {
         throw new Error('Response failed verification, ensure the identity you selected is still under your control.');
       }
 
-      await performAfterAuthenticationExpiryCheck(
-        request,
-        () => {
+      if (!getGenericResponseUri(request.responseURIs)) {
+        // Some requests intentionally use manual transfer. Keep the final signed
+        // ciphertext available until Done; do not silently discard the result.
+        assertExperimentalGenericRequestAllowed(request, store.getState());
+        assertNoPlaintextAppEncryptionResponse(signedResponse);
+        setExportResponseHex(signedResponse.toBuffer().toString('hex'));
+        setLoading(false);
+        return;
+      }
+
+      if (savedResponse) {
+        // Only delivery is retried. A response prepared while authorized keeps
+        // its original signed ciphertext even after the request has expired.
+        assertExperimentalGenericRequestAllowed(request, store.getState());
+        await deliverGenericResponse(request, savedResponse);
+      } else {
+        await performAfterAuthenticationExpiryCheck(request, () => {
           assertActive();
-          return handleResponseUri(request, signedResponse);
-        },
-      );
+          assertExperimentalGenericRequestAllowed(request, store.getState());
+          return deliverGenericResponse(request, signedResponse);
+        });
+      }
       assertActive();
       await markSavedPendingRequestComplete();
       assertActive();
@@ -430,7 +390,7 @@ const GenericRequestComplete = props => {
           </View>
         )}
 
-        {responseNotice && (
+        {(responseNotice || exportResponseHex) && (
           <View style={styles.noticeCard}>
             <MaterialCommunityIcons
               name="information-outline"
@@ -438,13 +398,39 @@ const GenericRequestComplete = props => {
               color="#666"
               style={{ marginRight: 8, marginTop: 1 }}
             />
-            <Text style={styles.noticeText}>{responseNotice}</Text>
+            <Text style={styles.noticeText}>
+              {exportResponseHex
+                ? 'The app did not provide a response destination. Copy the signed response and return it to the app.'
+                : responseNotice}
+            </Text>
           </View>
         )}
       </View>
 
       {/* Footer actions */}
       <View style={[styles.footer, {paddingBottom: footerBottomPadding}]}>
+        {exportResponseHex && (
+          <View style={styles.ctaCol}>
+            <Button
+              mode="outlined"
+              accessibilityLabel="Copy signed response"
+              onPress={() => {
+                if (!isCurrent()) return;
+                try {
+                  const request = new GenericRequest();
+                  request.fromBuffer(Buffer.from(requestBufferString, 'hex'));
+                  assertExperimentalGenericRequestAllowed(request, store.getState());
+                  Clipboard.setString(exportResponseHex);
+                  setResponseCopied(true);
+                } catch (error) {
+                  createAlert('Error', error.message || 'Unable to copy response.');
+                }
+              }}
+            >
+              {responseCopied ? 'Copied' : 'Copy response'}
+            </Button>
+          </View>
+        )}
         {postFailed && (
           <View style={styles.ctaCol}>
             <Button
@@ -463,7 +449,7 @@ const GenericRequestComplete = props => {
             onPress={onComplete}
             style={styles.completeButton}
           >
-            Complete
+            {exportResponseHex ? 'Done' : 'Complete'}
           </GradientButton>
         </View>
       </View>

@@ -22,6 +22,7 @@ jest.mock('react-native', () => ({
   TouchableOpacity: 'TouchableOpacity',
   TouchableWithoutFeedback: 'TouchableWithoutFeedback',
   View: 'View',
+  StyleSheet: {create: styles => styles},
 }));
 jest.mock('react-native-paper', () => ({
   ActivityIndicator: 'ActivityIndicator',

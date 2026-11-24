@@ -38,9 +38,9 @@ THIS IS EXPERIMENTAL SOFTWARE AND IT IS PROVIDED "AS IS" AND ANY EXPRESSED OR IM
 
 The app uses React Native 0.77.3 with Hermes and the legacy React Native architecture. Keep the dependency patches in `patches/`: they retain the app's ENS/Verus behavior, random-number error handling, legacy network-module build fixes and Verus SDK packaging fixes. The other compatibility patches have been replaced by library upgrades or React Native's built-in Android Gradle support; see the [dependency compatibility notes](tools/android/README.md#dependency-compatibility).
 
-The pinned `verusid-ts-client` revision constructs identity updates and encrypted uploads locally, with authenticated upload and funding verification. Its former `verusid-ts-client+0.1.0.patch` backport has been removed; do not reapply it over the SDK's current verification implementation. Keep the SDK and primitive dependency pins aligned so both use the same runtime classes.
+The pinned `verusid-ts-client` revision constructs identity updates and encrypted uploads locally, with authenticated upload and funding verification. It supports native payments and identity-address change in local all-input funding, allowing handshake gifts to fund user-controlled removal fees and app storage in the same transaction. Keep the SDK and primitive dependency pins aligned so both use the same runtime classes.
 
-Run `pnpm update-verus-libs --dry-run` to preview upstream revisions, or `pnpm update-verus-libs` to update all four core library pins and reinstall dependencies. The updater aligns direct dependencies, resolutions and pnpm overrides before regenerating the lockfile. It follows `master` for primitives and the identity client, `main` for the RPC client, and `utxo-lib-verus` for BitGo (whose `master` is a different package).
+Run `pnpm update-verus-libs --dry-run` to preview upstream revisions, or `pnpm update-verus-libs` to update all four core library pins and reinstall dependencies. The updater aligns direct dependencies, resolutions and pnpm overrides before regenerating the lockfile. It follows `app-authorization-request` in the `michaeltout` forks for primitives and the identity client, `main` for the RPC client, and `utxo-lib-verus` for BitGo (whose `master` is a different package).
 
 Ordinary identity edits, transfers, uploads, revocations and recoveries keep the reviewed transaction in memory and make one submission attempt per review. They do not save incoming requests or signed transactions for later replay. An uncertain result reports the transaction ID so its status can be checked before starting a new review. Gift cards, spendable-key claims and funded registrations retain their separate sensitive recovery data.
 
@@ -58,6 +58,8 @@ corepack pnpm install --frozen-lockfile
 ```
 
 Allow the install scripts to run; `--ignore-scripts` skips required native patches. The final patch-package subprocess uses `CI=true` so patch failures also stop local installs; the pinned patch-package 6.2.1 does not support `--error-on-fail`. The checked-in pnpm workspace configuration supplies the hoisted layout expected by the native projects. Keep the environment files configured for your build without committing API credentials.
+
+The experimental app authorization changes are included in the pinned Git dependencies from the `michaeltout` forks' `app-authorization-request` branches. No local library patches or sibling checkouts are required. Package and protocol versions remain unchanged.
 
 ## Android (Linux or macOS)
 

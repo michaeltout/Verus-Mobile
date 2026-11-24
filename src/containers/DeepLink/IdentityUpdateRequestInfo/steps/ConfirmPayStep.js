@@ -45,12 +45,15 @@ import {
 } from 'verus-typescript-primitives';
 import { processEncryptedKeys } from '../../../../utils/crypto/encryptCredentials';
 import { confirmPayStepStyles as localStyles } from '../../../../styles';
-import {ensureGenericResponseSigner} from '../../../../utils/deeplink/genericResponse/ensureGenericResponseSigner';
+import {ensureGenericResponseSigner, getGenericResponseSigner} from '../../../../utils/deeplink/genericResponse/ensureGenericResponseSigner';
+import {assertAppEncryptionAuthorization, scopedRequestContext} from '../../../../utils/deeplink/validator/appEncryptionAuthorization';
+import {assertNoDirectAuthorizationBucketUpdates} from '../../../../utils/appAuthorization/requestPolicy';
 import {showFundRawTransactionErrorAlert} from '../../../../utils/vrpc/fundRawTransactionError';
 import IdentityStateChangeCard from '../components/IdentityStateChangeCard';
 import {buildIdentityStateChange} from '../utils/buildIdentityStateChange';
 
 const ConfirmPayStep = ({
+  request,
   details,
   requestIsTestnet,
   subjectIdentity,
@@ -242,6 +245,7 @@ const ConfirmPayStep = ({
       };
       const activeHeight = await validateIdentityUpdateContext(context);
       assertActive();
+      await assertNoDirectAuthorizationBucketUpdates(details, subjectIdentity, coinObj, {...context, assertActive});
 
       // If request contains encrypted credential keys, encrypt them before
       // creating the tx so plaintext credentials are never sent to the server.
@@ -326,11 +330,19 @@ const ConfirmPayStep = ({
         baseResponse.fromBuffer(Buffer.from(responseBufferString, 'hex'), 0);
       }
 
-      ensureGenericResponseSigner({
-        response: baseResponse,
+      const selectedUser = request?.hasAppOrDelegatorID() && getGenericResponseSigner(baseResponse) || {
         systemID: coinObj.system_id,
         identityID: signerIdentityAddress,
+      };
+      ensureGenericResponseSigner({
+        response: baseResponse,
+        ...selectedUser,
       });
+
+      const authorization = request?.hasAppOrDelegatorID()
+        ? scopedRequestContext(request, selectedUser, preparedUpdate.context)
+        : null;
+      let signedReceipt;
 
       const { wallet, coinObj: sourceCoinObj } = selectedSource;
       const [channelName, , systemId] = wallet.api_channels[API_SEND].split('.');
@@ -344,6 +356,14 @@ const ConfirmPayStep = ({
           const spendingKey = await requestPrivKey(sourceCoinObj.id, channelName, preparedUpdate.context);
           return preparedUpdate.built.utxos.map(() => [spendingKey]);
         },
+        persistSignedTransaction: authorization ? receipt => { signedReceipt = receipt; } : undefined,
+        beforeSend: authorization
+          ? () => assertAppEncryptionAuthorization(request, selectedUser, {
+            ...authorization,
+            executionStep: `identity-update:${detailIndex}`,
+            executionReceipt: signedReceipt,
+          })
+          : undefined,
       });
       broadcastTxid = result.txid;
       if (preparedUpdate.context.signal?.aborted || currentReviewInputs.current !== preparedUpdate.reviewInputs) return;
@@ -383,7 +403,7 @@ const ConfirmPayStep = ({
     } finally {
       if (sending.current === preparedUpdate) sending.current = null;
     }
-  }, [selectedSource, preparedUpdate, hasFee, details, responseBufferString, coinObj, signerIdentityAddress, next, detailIndex, cancel, reviewInputs]);
+  }, [selectedSource, preparedUpdate, hasFee, details, responseBufferString, coinObj, signerIdentityAddress, next, detailIndex, cancel, reviewInputs, request]);
 
   if (submissionOutcome) {
     return (

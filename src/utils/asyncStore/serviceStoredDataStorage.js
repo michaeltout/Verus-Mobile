@@ -24,19 +24,9 @@ export const storeServiceStoredData = (data) => {
   });
 };
 
-export const loadServiceStoredData = () => {
-  return new Promise((resolve, reject) => {
-    SecureStorage.getItem(SERVICE_STORAGE_INTERNAL_KEY)
-      .then((res) => {
-        if (!res) {
-          resolve({});
-        } else {
-          _res = JSON.parse(res);
-          resolve(_res);
-        }
-      })
-      .catch((err) => reject(err));
-  });
+export const loadServiceStoredData = async () => {
+  const stored = await SecureStorage.getItem(SERVICE_STORAGE_INTERNAL_KEY);
+  return stored ? JSON.parse(stored) : {};
 };
 
 export const clearServiceStoredData = () => {
@@ -49,10 +39,16 @@ export const clearServiceStoredData = () => {
   });
 };
 
-export const storeServiceStoredDataForUser = async (data, accountHash) => {
-  let allStoredData = { ...(await loadServiceStoredData()) };
-  allStoredData[accountHash] = data;
-  return (await storeServiceStoredData(allStoredData))[accountHash];
+export const storeServiceStoredDataForUser = async (
+  data,
+  accountHash,
+  // Reuse a snapshot only while holding the service-storage write queue.
+  allStoredData = null,
+) => {
+  const stored = allStoredData || await loadServiceStoredData();
+  return (await storeServiceStoredData({...stored, [accountHash]: data}))[
+    accountHash
+  ];
 };
 
 export const deleteServiceStoredDataForUser = async (accountHash) => {

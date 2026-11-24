@@ -79,7 +79,7 @@ export const send = async (coinObj, activeUser, address, amount, passthrough) =>
   }
 }
 
-export const sendBridgeTransfer = async (coinObj, [reserveTransfer, transferOptions], approvalParams, maxGasPrice) => {
+export const sendBridgeTransfer = async (coinObj, [reserveTransfer, transferOptions], approvalParams, maxGasPrice, beforeSend) => {
   try {
     const Web3Provider = getWeb3ProviderForNetwork(coinObj.network);
 
@@ -112,6 +112,7 @@ export const sendBridgeTransfer = async (coinObj, [reserveTransfer, transferOpti
 
       // Some tokens require approval amount to be zero before approval is allowed
       if (BRIDGE_APPROVAL_ZERO_OUT_TOKENS.some(x => (x.toLowerCase() === coinObj.currency_id.toLowerCase()))) {
+        if (beforeSend) await beforeSend({step: 'clear-token-approval'});
         const zeroOutApproval = await contract.approve(delegatorContractAddress, "0", approvalOptions);
         const zeroOutReply = await zeroOutApproval.wait();
 
@@ -120,6 +121,7 @@ export const sendBridgeTransfer = async (coinObj, [reserveTransfer, transferOpti
         }
       }
 
+      if (beforeSend) await beforeSend({step: 'approve-token'});
       const approval = await contract.approve(delegatorContractAddress, approvalAmount, approvalOptions);
       const reply = await approval.wait();
 
@@ -129,7 +131,10 @@ export const sendBridgeTransfer = async (coinObj, [reserveTransfer, transferOpti
     }
 
     const response = await sendWithBalanceCheck(
-      () => delegatorContract.sendTransfer(reserveTransfer, transferOptions),
+      async () => {
+        if (beforeSend) await beforeSend({step: 'transfer'});
+        return delegatorContract.sendTransfer(reserveTransfer, transferOptions);
+      },
       getBalance,
     );
     

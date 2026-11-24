@@ -1,20 +1,17 @@
 import { DefinedKey, IdentityUpdateRequestOrdinalVDXFObject, GenericRequest, GenericResponse, DATA_TYPE_DEFINEDKEY, IDENTITY_CREDENTIAL, fqnToAddress, toIAddress, getDataKey } from "verus-typescript-primitives";
 import VrpcProvider from '../../vrpc/vrpcInterface';
-import { getBlock } from "../../api/channels/vrpc/requests/getBlock";
-import { getSignatureInfo } from "../../api/channels/vrpc/requests/getSignatureInfo";
 import { getFriendlyNameMap, getIdentity } from "../../api/channels/verusid/callCreators";
 import { getIdentityContent } from "../../api/channels/verusid/requests/getIdentityContent";
 import { getInfo } from "../../api/channels/vrpc/callCreators";
 import { CoinDirectory } from "../../CoinData/CoinDirectory";
-import { getSystemNameFromSystemId } from "../../CoinData/CoinData";
 import { createUpdateIdentityTx, getUpdatableIdentity } from "../../api/channels/verusid/requests/updateIdentity";
-import { convertFqnToDisplayFormat } from "../../fullyqualifiedname";
 import { capitalizeString } from "../../stringUtils";
 import { getKnownVDXFKeyName } from "../../vdxf/vdxfTypeLabels";
 import {createLocalIdentityUploadCrypto} from '../../identityUpdate/localUploadCrypto';
 import {identityToDisplayJson} from '../../identityUpdate/identityDisplay';
 import {cloneIdentityUpdateRequest} from '../../identityUpdate/cloneRequest';
 import {assertIdentityUpdateRequestConstraints} from '../validator/identityUpdateRequestValidator';
+import {getSignedRequestDisplayProps} from './requestDisplayUtils';
 
 /**
  * @param {GenericRequest} request
@@ -268,40 +265,12 @@ export const handleIdentityUpdateRequestDetailsVDXFObject = async (request, resp
     };
   }
 
-  const signerSystemID = request.signature.systemID.toIAddress();
-  const signerSystemName = getSystemNameFromSystemId(signerSystemID);
-  const signerIdentityID = request.signature.identityID.toIAddress();
-
-  let signerFqn;
-  let sigtime;
-
-  if (signerSystemName) {
-    const signerCoinObj = CoinDirectory.getBasicCoinObj(signerSystemName);
-    const signedBy = await getIdentity(signerCoinObj.system_id, signerIdentityID);
-    if (signedBy.error) throw new Error(signedBy.error.message);
-
-    signerFqn = convertFqnToDisplayFormat(signedBy.result.fullyqualifiedname);
-
-    const sig = await getSignatureInfo(
-      signerCoinObj.system_id,
-      request.signature.identityID.toIAddress(),
-      request.signature.signatureAsVch.toString('base64')
-    );
-    const sigblock = await getBlock(signerCoinObj.system_id, sig.height);
-    if (sigblock.error) throw new Error(sigblock.error.message);
-    sigtime = sigblock.result.time;
-  } else {
-    signerFqn = request.signature.identityID.toIAddress();
-  }
+  const signer = await getSignedRequestDisplayProps(request);
 
   return {
     displayProps: {
       detailsBufferString: requestDetails.toBuffer().toString('hex'),
-      sigtime,
-      signerFqn,
-      signerSystemID,
-      signerSystemName,
-      signerIdentityID,
+      ...signer,
       subjectIdentity: displaySubjectIdentity,
       identityUpdates,
       identityPreviewPrepared,

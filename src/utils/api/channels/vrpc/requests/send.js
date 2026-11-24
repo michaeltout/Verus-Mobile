@@ -32,7 +32,8 @@ export const sendCurrencyTransfer = async (
   coinObj,
   channelId,
   txHex,
-  inputs
+  inputs,
+  beforeSend,
 ) => {
   try {
     const network = networks.verus;
@@ -62,6 +63,11 @@ export const sendCurrencyTransfer = async (
 
     const signedTxHex = txb.build().toHex();
 
+    // Unlock and transaction preparation have finished. An app-scoped invoice
+    // must still have a current grant immediately before the broadcast.
+    if (beforeSend) await beforeSend({step: 'transfer', receipt: {
+      systemId, txid: Transaction.fromHex(signedTxHex, network).getId(), rawTx: signedTxHex,
+    }});
     const sendRes = await sendRawTransaction(systemId, signedTxHex);
 
     if (sendRes.error) {

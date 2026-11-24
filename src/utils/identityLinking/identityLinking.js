@@ -219,11 +219,14 @@ export const discoverLinkableIdentities = async context => {
   assertCurrent(context);
 
   const linked = linkedData?.linked_ids?.[context.chain] || {};
+  const storage = linkedData?.storage_ids?.[context.chain] || {};
   record.linked = new Set(Object.keys(linked));
 
   const rows = [];
 
   for (const [identityAddress, identity] of definitions) {
+    // Shared app storage belongs in Connected Apps, even when our keys can spend it.
+    if (has(storage, identityAddress)) continue;
     if (!Array.isArray(identity.primaryaddresses)) {
       continue;
     }
@@ -373,13 +376,15 @@ export const linkSelectedIdentities = async ({ context, identities }) => {
       try {
         // Retain successful writes so retrying a partial batch only saves failures.
         if (!record.linked.has(identity.identityAddress)) {
-          await linkVerusId(
+          const saved = await linkVerusId(
             identity.identityAddress,
             identity.fullyQualifiedName,
             context.chain,
             context,
           );
           assertCurrent(context);
+          if (saved === false)
+            throw new Error('This storage identity is managed in Connected Apps.');
           record.linked.add(identity.identityAddress);
         }
 

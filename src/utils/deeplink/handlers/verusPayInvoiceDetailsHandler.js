@@ -8,6 +8,7 @@ import { satsToCoins } from "../../math";
 import { CoinDirectory } from "../../CoinData/CoinDirectory";
 import BigNumber from "bignumber.js";
 import { VERUSPAY_BURN_OWN_ADDRESS_DISPLAY } from "../verusPayBurnChangePrice";
+import { getSignedRequestDisplayProps } from './requestDisplayUtils';
 
 /**
  * @param {GenericRequest} request
@@ -43,16 +44,15 @@ export const handleVerusPayInvoiceDetailsVDXFObject = async (request, response, 
   if (details == null) throw new Error("Invalid index for request details");
   if (!(details instanceof VerusPayInvoiceDetailsOrdinalVDXFObject)) throw new Error("Invoice details not found at specified index");
 
-  let displayProps = {};
-
-  if (request.isSigned()) {
-    displayProps = await getDisplayDataFromVerusPayInvoiceDetails(
-      details.data,
-      getVerusPayInvoiceSignerContext(request),
-    );
-  } else {
-    displayProps = await getDisplayDataFromVerusPayInvoiceDetails(details.data);
-  }
+  // A generic envelope owns its signature and app attribution. Keep standalone
+  // invoice display separate so its legacy signature context remains supported.
+  const [invoice, signer] = await Promise.all([
+    getDisplayDataFromVerusPayInvoiceDetails(details.data),
+    request.isSigned() ? getSignedRequestDisplayProps(request) : null,
+  ]);
+  const displayProps = signer
+    ? {...invoice, ...signer, isSigned: true}
+    : invoice;
 
   return {
     displayProps,

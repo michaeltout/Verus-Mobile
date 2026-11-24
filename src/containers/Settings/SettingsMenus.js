@@ -91,6 +91,7 @@ class SettingsMenus extends Component {
       return (
         <Route
           navigation={this.props.navigation}
+          authorizationJobId={this.props.route?.params?.authorizationJobId}
         />
       );
     }

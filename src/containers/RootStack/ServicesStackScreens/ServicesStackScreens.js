@@ -1,5 +1,6 @@
 import React from 'react';
 import { createStackNavigator } from "@react-navigation/stack";
+import {CONNECTED_APPS_SERVICE_ID} from '../../../utils/constants/services';
 import { defaultHeaderOptions } from '../../../utils/navigation/header';
 import Services from '../../Services/Services'
 import Service from '../../Services/Service/Service'
@@ -29,6 +30,14 @@ const ServicesStackScreens = props => {
       <ServicesStack.Screen
         name="Service"
         component={Service}
+        options={({route}) => {
+          if (route.params?.service !== CONNECTED_APPS_SERVICE_ID) return {};
+
+          return {
+            // Connected Apps owns its app/category navigation and headers.
+            headerShown: false,
+          };
+        }}
       />
       <ServicesStack.Screen
         name="IdentityRegistration"

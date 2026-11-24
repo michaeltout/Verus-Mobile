@@ -84,6 +84,8 @@ const IdentityUpdateRequestInfo = props => {
     signerSystemID,
     signerSystemName,
     signerIdentityID,
+    appOrDelegatorID,
+    appOrDelegatorFqn,
     coinObj,
     chainInfo,
     subjectIdentity,
@@ -126,7 +128,7 @@ const IdentityUpdateRequestInfo = props => {
   const chainId =
     signerSystemName ||
     (signerSystemID ? getSystemNameFromSystemId(signerSystemID) : null);
-  const canOpenSignerModal = Boolean(chainId && signerIdentityID);
+  const canOpenSignerModal = Boolean(signerSystemID && signerIdentityID);
 
   const request = useMemo(() => {
     const req = new GenericRequest();
@@ -907,6 +909,10 @@ const IdentityUpdateRequestInfo = props => {
         <ReviewStep
           identityStateChange={identityStateChange}
           signerFqn={signerFqn}
+          signerSystemID={signerSystemID}
+          appOrDelegatorID={appOrDelegatorID}
+          appOrDelegatorFqn={appOrDelegatorFqn}
+          request={request}
           canOpenSignerModal={canOpenSignerModal}
           chainId={chainId}
           sigDateString={sigDateString}
@@ -955,6 +961,7 @@ const IdentityUpdateRequestInfo = props => {
 
       {currentStepId === STEP_CONFIRM_PAY && (
         <ConfirmPayStep
+          request={request}
           identityStateChange={identityStateChange}
           chainHeight={chainInfo?.blocks}
           details={details}

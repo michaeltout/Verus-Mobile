@@ -4,6 +4,7 @@ import {
   SPENDABLE_KEY_DETAILS_VDXF_KEY,
 } from 'verus-typescript-primitives';
 import store from '../../../store';
+import {getSignedRequestDisplayProps} from './requestDisplayUtils';
 import {
   getWalletBackupCompletionKey,
   hasCompletedWalletBackupRequest,
@@ -58,6 +59,9 @@ export const handleCreateWalletBackupDetailsVDXFObject = async (
 
   return {
     displayProps: {
+      ...(request.isSigned() && request.hasAppOrDelegatorID()
+        ? await getSignedRequestDisplayProps(request)
+        : {}),
       detailsBufferString: detail.data.toBuffer().toString('hex'),
       backupCompletionKey: completionKey,
       backupType: detail.data.backupType.toNumber(),

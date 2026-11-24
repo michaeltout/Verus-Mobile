@@ -12,6 +12,7 @@ import {
 } from '../../../actions/actionDispatchers';
 import { useObjectSelector } from '../../../hooks/useObjectSelector';
 import { createProfileFromSeed } from '../../../utils/profile/createProfileFromSeed';
+import {validateMnemonic} from 'bip39';
 
 const CreateProfileStack = createStackNavigator();
 
@@ -24,6 +25,12 @@ export default function CreateProfileStackScreens(props) {
 
   const accounts = useObjectSelector(state => state.authentication.accounts);
   const activeCoinList = useObjectSelector(state => state.coins.activeCoinList);
+  const authorizationPending = useObjectSelector(state =>
+    state.deeplink?.passthrough?.resumeAuthorizationAfterSetup === true,
+  );
+  const authorizationTestnet = useObjectSelector(state =>
+    state.deeplink?.passthrough?.authorizationTestnet === true,
+  );
 
   const createProfile = async (seed, testProfile, useSeedAsZ) => {
     // Block queued taps immediately, before the loading modal can render.
@@ -41,7 +48,10 @@ export default function CreateProfileStackScreens(props) {
         activeCoinList,
         dispatch,
         testProfile,
-        includeDlightSeed: useSeedAsZ,
+        // A locally created/imported mnemonic supplies both permanent channels
+        // during onboarding. Gift material is never used as the profile seed.
+        // WIF imports still use the existing independent Z-seed setup screen.
+        includeDlightSeed: useSeedAsZ || (authorizationPending && validateMnemonic(seed)),
         useBiometrics,
       });
       created = true;
@@ -108,6 +118,7 @@ export default function CreateProfileStackScreens(props) {
           <CreateWalletStackScreens
             navigation={props.navigation}
             createProfile={createProfile}
+            initialTestProfile={authorizationPending && authorizationTestnet}
           />
         )}
       </CreateProfileStack.Screen>

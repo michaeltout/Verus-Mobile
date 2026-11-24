@@ -53,8 +53,9 @@ it('keeps status and action separate, announces the full name, and opens progres
     longName, 'Name commitment awaiting confirmation', 'View progress ›',
   ]);
   labels.forEach(label => {
-    // Compact previews may shorten the name; status and CTA must stay visible.
-    expect(label.props.numberOfLines).toBe(textContent(label) === longName ? 2 : undefined);
+    // The shared Activity row lets names, status, and actions wrap at larger
+    // accessibility text sizes rather than truncating any of those labels.
+    expect(label.props.numberOfLines).toBeUndefined();
     expect(label.props.allowFontScaling).not.toBe(false);
   });
   // Status and action share the vertical content column, instead of competing

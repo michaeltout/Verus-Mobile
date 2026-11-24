@@ -21,6 +21,11 @@ import {
   scopeSessionAction,
   sessionScopeIsCurrent,
 } from '../actions/actions/updates/sessionRequests';
+import {
+  hasAuthorizationDetails,
+  readAuthorizationTransport,
+} from '../utils/deeplink/privateRequestTransport';
+import {assertExperimentalGenericRequestAllowed} from '../utils/deeplink/experimentalDeeplinks';
 
 const parserIsCurrent = (state, source) =>
   state.deeplink.requestId === source.requestId &&
@@ -31,15 +36,16 @@ export default function* deeplinkSaga() {
 }
 
 function* handleDeeplinkUrl(action) {
-  const {url: urlstring, passthrough = null} = action.payload;
+  const {url: transportedUrl, passthrough = null} = action.payload;
 
-  if (urlstring != null) {
+  if (transportedUrl != null) {
     const source = yield select(state => ({
       requestId: state.deeplink.requestId,
       sessionScope: captureSessionScope(state),
     }));
 
     try {
+      const urlstring = readAuthorizationTransport(transportedUrl);
       if (urlstring.length >= MAX_DEEPLINK_STRING_LENGTH) throw new Error("Deeplink URL max length exceeded.");
       const url = new URL(urlstring);
 
@@ -63,6 +69,12 @@ function* handleDeeplinkUrl(action) {
             )
           : urlstring;
         const req = GenericRequest.fromWalletDeeplinkUri(parseUri);
+        const isAuthorization = hasAuthorizationDetails(req);
+
+        if (isAuthorization) {
+          const state = yield select();
+          assertExperimentalGenericRequestAllowed(req, state);
+        }
 
         if (
           otherHandlerInstalled &&
@@ -102,6 +114,9 @@ function* handleDeeplinkUrl(action) {
           });
         } catch (e) {
           if (!(yield select(parserIsCurrent, source))) return;
+          // A gift must never fall back to raw Redux state when durable storage
+          // fails; reopening the original request is safer than losing it.
+          if (isAuthorization) throw new Error('Unable to securely save this authorization request.');
           console.warn('Unable to save pending deeplink', e?.message ?? e);
         }
         if (!(yield select(parserIsCurrent, source))) return;
@@ -119,7 +134,9 @@ function* handleDeeplinkUrl(action) {
           type: SET_DEEPLINK_DATA,
           payload: {
             id: GENERIC_REQUEST_DEEPLINK_VDXF_KEY.vdxfid,
-            data: requestBufferString,
+            data: isAuthorization
+              ? {authorizationPendingId: savedPendingRequest.id}
+              : requestBufferString,
             passthrough: mergedPassthrough,
           },
         }, source);
@@ -162,7 +179,9 @@ function* handleDeeplinkUrl(action) {
       }
     } catch (e) {
       if (!(yield select(parserIsCurrent, source))) return;
-      console.error(e)
+      // Native/parser errors can retain their input. Do not log an error object
+      // associated with a private request transport.
+      if (!transportedUrl?.privateAuthorizationRequest) console.error(e);
       
       createAlert('Error', e.message);
     }

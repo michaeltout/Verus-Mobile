@@ -17,6 +17,7 @@ import {coinsList} from '../CoinData/CoinsList';
 import {deriveKeyPair} from '../keys';
 import {IS_PBAAS, VRPC} from '../constants/intervalConstants';
 import {coinsToSats, satsToCoins} from '../math';
+import {convertFqnToDisplayFormat} from '../fullyqualifiedname';
 import {
   getAddressDeltas,
   getAddressUtxos,
@@ -115,7 +116,11 @@ const getIdentityAuthorityAddresses = identity => {
   return addresses;
 };
 
-const getIdentityAuthorityNames = async (systemId, identityResult) => {
+const getIdentityAuthorityNames = async (
+  systemId,
+  identityResult,
+  nameLookups,
+) => {
   const identity = getIdentityFromResult(identityResult);
   const authorityAddresses = getIdentityAuthorityAddresses(identity);
 
@@ -126,6 +131,7 @@ const getIdentityAuthorityNames = async (systemId, identityResult) => {
       systemId,
       identityResult,
       [...authorityAddresses],
+      nameLookups,
     );
 
     return authorityAddresses.reduce((mappedNames, authorityAddress) => {
@@ -146,6 +152,21 @@ const enrichIdentityResult = async (systemId, identityResult) => {
   const identityAddress = getIdentityAddress(identity);
 
   if (!identity || !identityAddress) return identityResult;
+
+  // Address discovery already returns these fields. Fetch missing metadata
+  // once per identity, rather than reloading complete records.
+  if (
+    getIdentityFullName(identityResult, identity) &&
+    identityResult.txid &&
+    Number.isInteger(identityResult.vout) &&
+    Number.isInteger(identityResult.blockheight) &&
+    identityResult.status &&
+    (identity.minimumsignatures ?? identity.minimumSignatures) != null &&
+    (identity.recoveryauthority || identity.recoveryAuthority) &&
+    (identity.revocationauthority || identity.revocationAuthority) &&
+    getIdentityPrimaryAddresses(identity).length > 0
+  )
+    return {...identityResult, identity};
 
   try {
     const identityRes = await getIdentity(systemId, identityAddress);
@@ -170,29 +191,37 @@ const enrichIdentityResult = async (systemId, identityResult) => {
       },
       txid: identityResult.txid || directResult.txid,
       vout:
-        identityResult.vout == null
-          ? directResult.vout
-          : identityResult.vout,
+        identityResult.vout == null ? directResult.vout : identityResult.vout,
     };
 
-    return {
-      ...enrichedIdentityResult,
-      authorityNames: await getIdentityAuthorityNames(
-        systemId,
-        enrichedIdentityResult,
-      ),
-    };
+    return enrichedIdentityResult;
   } catch (e) {
     console.warn(e.message);
     return identityResult;
   }
 };
 
-const enrichIdentityResults = (systemId, identityResults) => {
-  return Promise.all(
+const enrichIdentityResults = async (systemId, identityResults) => {
+  const records = await Promise.all(
     identityResults.map(identityResult =>
       enrichIdentityResult(systemId, identityResult),
     ),
+  );
+  // The user identity often controls both storage authorities. Resolve its name
+  // once from the gift inventory and share unknown-name reads across all IDs.
+  const names = {names: {}, pending: new Map()};
+  for (const record of records) {
+    const identity = getIdentityFromResult(record);
+    const fullName = getIdentityFullName(record, identity);
+    if (fullName)
+      names.names[getIdentityAddress(identity)] =
+        convertFqnToDisplayFormat(fullName);
+  }
+  return Promise.all(
+    records.map(async record => ({
+      ...record,
+      authorityNames: await getIdentityAuthorityNames(systemId, record, names),
+    })),
   );
 };
 
@@ -329,7 +358,13 @@ const selectUtxosForAmount = (
   const selected = [];
   let total = BigNumber(0);
 
-  for (const utxo of utxos) {
+  // Spend the small fee outputs first, regardless of RPC ordering. The larger
+  // remainder must stay available for the final identity and asset transfer.
+  const candidates = [...utxos].sort((left, right) =>
+    getUtxoSats(left).comparedTo(getUtxoSats(right)),
+  );
+
+  for (const utxo of candidates) {
     selected.push(utxo);
     total = total.plus(getUtxoSats(utxo));
 
@@ -692,7 +727,7 @@ const getClaimableIdentities = (identityResults, claimAddress) => {
     });
 };
 
-const getClaimableIdentitiesFromUtxos = async (systemId, utxos, claimAddress) => {
+const getIdentityResultsFromUtxos = (systemId, utxos) => {
   const identityResults = [];
 
   for (const utxo of utxos) {
@@ -724,37 +759,32 @@ const getClaimableIdentitiesFromUtxos = async (systemId, utxos, claimAddress) =>
     }
   }
 
-  const enrichedIdentityResults = await enrichIdentityResults(
-    systemId,
-    identityResults,
-  );
-
-  return getClaimableIdentities(
-    enrichedIdentityResults,
-    claimAddress,
-  );
+  return identityResults;
 };
 
-const mergeIdentityClaims = (...identityLists) => {
+const mergeIdentityResults = (...identityLists) => {
   const byAddress = new Map();
 
   for (const identityList of identityLists) {
-    for (const identity of identityList) {
-      if (!identity.identityAddress) continue;
-      const previous = byAddress.get(identity.identityAddress) || {};
-
-      byAddress.set(identity.identityAddress, {
+    for (const result of identityList) {
+      const identity = getIdentityFromResult(result);
+      const address = getIdentityAddress(identity);
+      if (!address) continue;
+      const previous = byAddress.get(address);
+      byAddress.set(address, {
         ...previous,
-        ...identity,
-        result: {
-          ...(previous.result || {}),
-          ...(identity.result || {}),
-        },
+        ...result,
+        fullyqualifiedname:
+          result.fullyqualifiedname || previous?.fullyqualifiedname,
+        txid: result.txid || previous?.txid,
+        vout: result.vout ?? previous?.vout,
+        blockheight: result.blockheight ?? previous?.blockheight,
+        identity: {...getIdentityFromResult(previous), ...identity},
       });
     }
   }
 
-  return Array.from(byAddress.values());
+  return [...byAddress.values()];
 };
 
 export const spendableKeyDetailsRequiresPassword = spendableKeyOrdinal => {
@@ -788,11 +818,7 @@ export const discoverSpendableKeyClaims = async ({
   const {
     systems: scanSystems,
     scanUniverseComplete: selectedScanUniverseComplete,
-  } = getScanSystems(
-    requestIsTestnet,
-    activeCoinsForUser,
-    includeKnownSystems,
-  );
+  } = getScanSystems(requestIsTestnet, activeCoinsForUser, includeKnownSystems);
   const cachedSystemsById = new Map(
     (cachedSystems || []).map(system => [system.systemId, system]),
   );
@@ -814,58 +840,58 @@ export const discoverSpendableKeyClaims = async ({
     const claimAddress = keyPair.addresses && keyPair.addresses[0];
 
     if (!claimAddress || !keyPair.privKey) {
-      throw new Error(`Unable to derive spendable key address for ${coinObj.display_ticker || coinObj.id}.`);
+      throw new Error(
+        `Unable to derive spendable key address for ${coinObj.display_ticker || coinObj.id}.`,
+      );
     }
 
-    const utxosRes = await getAddressUtxos(coinObj.system_id, [claimAddress], true);
+    // These independent indexes cover different assets. Read both together,
+    // keeping identity lookup failures visible to the complete-scan check.
+    const [utxosRes, identityLookup] = await Promise.all([
+      getAddressUtxos(coinObj.system_id, [claimAddress], true),
+      getIdentitiesWithPrimaryAddress(coinObj.system_id, claimAddress).then(
+        result => ({result}),
+        error => ({error}),
+      ),
+    ]);
     if (utxosRes.error) throw new Error(utxosRes.error.message);
 
     const spendableUtxos = (utxosRes.result || []).filter(utxo =>
       isSpendableUtxo(coinObj.system_id, utxo),
     );
 
-    const identitiesFromUtxos = await getClaimableIdentitiesFromUtxos(
+    const identitiesFromUtxos = getIdentityResultsFromUtxos(
       coinObj.system_id,
       utxosRes.result || [],
-      claimAddress,
     );
-    let identitiesFromRpc = [];
-    let identityLookupError = null;
-    let identityLookupSucceeded = false;
-
-    try {
-      const identityResults = await getIdentitiesWithPrimaryAddress(
-        coinObj.system_id,
-        claimAddress,
-      );
-      const enrichedIdentityResults = await enrichIdentityResults(
-        coinObj.system_id,
-        identityResults,
-      );
-      identitiesFromRpc = getClaimableIdentities(
-        enrichedIdentityResults,
-        claimAddress,
-      );
-      identityLookupSucceeded = true;
-    } catch (e) {
-      identityLookupError = e?.message || String(e || 'Identity lookup failed.');
-      console.warn(identityLookupError);
-    }
+    const identitiesFromRpc = identityLookup.result || [];
+    const identityLookupSucceeded = Array.isArray(identityLookup.result);
+    const identityLookupError = identityLookupSucceeded
+      ? null
+      : identityLookup.error?.message ||
+        String(identityLookup.error || 'Identity lookup failed.');
+    if (identityLookupError) console.warn(identityLookupError);
+    const uniqueIdentities = mergeIdentityResults(
+      identitiesFromUtxos,
+      identitiesFromRpc,
+    );
+    const enriched = await enrichIdentityResults(
+      coinObj.system_id,
+      uniqueIdentities,
+    );
     const identities = await Promise.all(
-      mergeIdentityClaims(identitiesFromUtxos, identitiesFromRpc).map(
-        async identity => {
-          const identityUtxos = await getIdentityTransferUtxos(
-            coinObj.system_id,
-            identity.identityAddress,
-            spendableUtxos,
-          );
+      getClaimableIdentities(enriched, claimAddress).map(async identity => {
+        const identityUtxos = await getIdentityTransferUtxos(
+          coinObj.system_id,
+          identity.identityAddress,
+          spendableUtxos,
+        );
 
-          return {
-            ...identity,
-            utxos: identityUtxos,
-          };
-        },
-      ),
+        return {
+          ...identity,
+          utxos: identityUtxos,
+        };
+      }),
     );
     const balanceMap = sumUtxoBalances(coinObj.system_id, spendableUtxos);
 
@@ -961,10 +987,9 @@ export const discoverSpendableKeyAddressClaims = async ({
       isSpendableUtxo(coinObj.system_id, utxo),
     );
 
-    const identitiesFromUtxos = await getClaimableIdentitiesFromUtxos(
+    const identitiesFromUtxos = getIdentityResultsFromUtxos(
       coinObj.system_id,
       utxosRes.result || [],
-      claimAddress,
     );
     let identitiesFromRpc = [];
     let identityLookupError = null;
@@ -974,20 +999,12 @@ export const discoverSpendableKeyAddressClaims = async ({
         coinObj.system_id,
         claimAddress,
       );
-      const enrichedIdentityResults = await enrichIdentityResults(
-        coinObj.system_id,
-        identityResults,
-      );
-      identitiesFromRpc = getClaimableIdentities(
-        enrichedIdentityResults,
-        claimAddress,
-        coinObj.system_id,
-      );
+      identitiesFromRpc = identityResults;
     } catch (e) {
       identityLookupError = e.message;
       console.warn(e.message);
     }
-    let identitiesFromExpected = [];
+    const identitiesFromExpected = [];
     const expectedIdentitiesForSystem = (expectedIdentities || []).filter(
       identity =>
         identity &&
@@ -996,6 +1013,15 @@ export const discoverSpendableKeyAddressClaims = async ({
     );
 
     for (const expectedIdentity of expectedIdentitiesForSystem) {
+      if (
+        [...identitiesFromUtxos, ...identitiesFromRpc].some(
+          found =>
+            getIdentityAddress(getIdentityFromResult(found)) ===
+            expectedIdentity.identityAddress,
+        )
+      )
+        continue;
+
       try {
         const identityRes = await getIdentity(
           coinObj.system_id,
@@ -1004,36 +1030,44 @@ export const discoverSpendableKeyAddressClaims = async ({
 
         if (identityRes.error) throw new Error(identityRes.error.message);
 
-        identitiesFromExpected.push(
-          ...getClaimableIdentities(
-            [identityRes.result],
-            claimAddress,
-            coinObj.system_id,
-          ),
-        );
+        identitiesFromExpected.push(identityRes.result);
       } catch (e) {
         console.warn(e.message);
       }
     }
 
+    const uniqueIdentities = mergeIdentityResults(
+      identitiesFromUtxos,
+      identitiesFromRpc,
+      identitiesFromExpected,
+    );
+    // Expected identities are display hints from the saved funding history;
+    // their names may fill gaps, but never replace discovered identity state.
+    for (const record of uniqueIdentities) {
+      if (!record.fullyqualifiedname) {
+        record.fullyqualifiedname = expectedIdentitiesForSystem.find(
+          expected =>
+            expected.identityAddress === getIdentityAddress(record.identity),
+        )?.fullyQualifiedName;
+      }
+    }
+    const enriched = await enrichIdentityResults(
+      coinObj.system_id,
+      uniqueIdentities,
+    );
     const identities = await Promise.all(
-      mergeIdentityClaims(
-        identitiesFromUtxos,
-        identitiesFromRpc,
-        identitiesFromExpected,
-      ).map(async identity => {
-          const identityUtxos = await getIdentityTransferUtxos(
-            coinObj.system_id,
-            identity.identityAddress,
-            spendableUtxos,
-          );
+      getClaimableIdentities(enriched, claimAddress).map(async identity => {
+        const identityUtxos = await getIdentityTransferUtxos(
+          coinObj.system_id,
+          identity.identityAddress,
+          spendableUtxos,
+        );
 
-          return {
-            ...identity,
-            utxos: identityUtxos,
-          };
-        },
-      ),
+        return {
+          ...identity,
+          utxos: identityUtxos,
+        };
+      }),
     );
     const balanceMap = sumUtxoBalances(coinObj.system_id, spendableUtxos);
 

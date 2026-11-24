@@ -12,6 +12,7 @@ import {
   VerifiableSignatureData,
 } from 'verus-typescript-primitives';
 import store from '../../../store';
+import VrpcProvider from '../../vrpc/vrpcInterface';
 import {getIdentity} from '../../api/channels/verusid/callCreators';
 import {getSignatureInfo} from '../../api/channels/vrpc/requests/getSignatureInfo';
 import {verifyGenericRequest} from '../../api/channels/vrpc/requests/verifyGenericRequest';
@@ -19,37 +20,58 @@ import {requestPrivKey} from '../../auth/authBox';
 import {CoinDirectory} from '../../CoinData/CoinDirectory';
 import {validateGenericRequest} from '../../deeplink/validator/envelopeValidator';
 
-jest.mock('../../../store', () => ({__esModule: true, default: {getState: jest.fn()}}));
-jest.mock('../../api/channels/verusid/callCreators', () => ({getIdentity: jest.fn()}));
-jest.mock('../../api/channels/vrpc/requests/getSignatureInfo', () => ({getSignatureInfo: jest.fn()}));
-jest.mock('../../api/channels/vrpc/requests/verifyGenericRequest', () => ({verifyGenericRequest: jest.fn()}));
+jest.mock('../../../store', () => ({
+  __esModule: true,
+  default: {getState: jest.fn()},
+}));
+jest.mock('../../api/channels/verusid/callCreators', () => ({
+  getIdentity: jest.fn(),
+}));
+jest.mock('../../api/channels/vrpc/requests/getSignatureInfo', () => ({
+  getSignatureInfo: jest.fn(),
+}));
+jest.mock('../../api/channels/vrpc/requests/verifyGenericRequest', () => ({
+  verifyGenericRequest: jest.fn(),
+}));
 jest.mock('../../auth/authBox', () => ({requestPrivKey: jest.fn()}));
-jest.mock('../../CoinData/CoinDirectory', () => ({CoinDirectory: {getBasicCoinObj: jest.fn()}}));
+jest.mock('../../CoinData/CoinDirectory', () => ({
+  CoinDirectory: {getBasicCoinObj: jest.fn()},
+}));
 jest.mock('../../vrpc/vrpcInterface', () => ({
   __esModule: true,
-  default: {initEndpoint: jest.fn()},
+  default: {initEndpoint: jest.fn(), getVerusIdInterface: jest.fn()},
 }));
 
 const compact = name => CompactIAddressObject.fromFQN(`${name}@`, 'VRSC');
 const system = compact('VRSC');
 const signer = compact('user');
 const key = ECPair.fromPrivateKeyBuffer(Buffer.alloc(32, 1), networks.verus);
-const recipient = new SaplingPaymentAddress({d: Buffer.alloc(11, 1), pkD: Buffer.alloc(32, 2)});
-const request = (details = {}, signed = true) => new GenericRequest({
-  signature: signed ? new VerifiableSignatureData({
-    systemID: system,
-    identityID: signer,
-    signatureAsVch: Buffer.from('signed request'),
-  }) : undefined,
-  appOrDelegatorID: compact('app-scope'),
-  details: [
-    new AuthenticationRequestOrdinalVDXFObject({data: new AuthenticationRequestDetails()}),
-    new AppEncryptionRequestOrdinalVDXFObject({data: new AppEncryptionRequestDetails({
-      encryptResponseToAddress: recipient,
-      ...details,
-    })}),
-  ],
+const recipient = new SaplingPaymentAddress({
+  d: Buffer.alloc(11, 1),
+  pkD: Buffer.alloc(32, 2),
 });
+const request = (details = {}, signed = true) =>
+  new GenericRequest({
+    signature: signed
+      ? new VerifiableSignatureData({
+          systemID: system,
+          identityID: signer,
+          signatureAsVch: Buffer.from('signed request'),
+        })
+      : undefined,
+    appOrDelegatorID: compact('app-scope'),
+    details: [
+      new AuthenticationRequestOrdinalVDXFObject({
+        data: new AuthenticationRequestDetails(),
+      }),
+      new AppEncryptionRequestOrdinalVDXFObject({
+        data: new AppEncryptionRequestDetails({
+          encryptResponseToAddress: recipient,
+          ...details,
+        }),
+      }),
+    ],
+  });
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -59,10 +81,14 @@ beforeEach(() => {
       activeAccount: {
         accountHash: 'profile',
         testnetOverrides: {},
-        keys: {VRSC: {vrpc: {
-          pubKey: key.getPublicKeyBuffer().toString('hex'),
-          encryptedPrivKey: 'encrypted key',
-        }}},
+        keys: {
+          VRSC: {
+            vrpc: {
+              pubKey: key.getPublicKeyBuffer().toString('hex'),
+              encryptedPrivKey: 'encrypted key',
+            },
+          },
+        },
       },
     },
   });
@@ -73,28 +99,57 @@ beforeEach(() => {
     vrpc_endpoints: ['https://example.com'],
     bitgojs_network_key: 'verus',
   });
-  getIdentity.mockResolvedValue({result: {
-    status: 'active',
-    blockheight: 12344,
-    identity: {primaryaddresses: [key.getAddress()], minimumsignatures: 1, flags: 0},
-  }});
+  getIdentity.mockResolvedValue({
+    result: {
+      status: 'active',
+      blockheight: 12344,
+      identity: {
+        primaryaddresses: [key.getAddress()],
+        minimumsignatures: 1,
+        flags: 0,
+      },
+    },
+  });
   verifyGenericRequest.mockResolvedValue(true);
   getSignatureInfo.mockResolvedValue({height: 12345});
   requestPrivKey.mockResolvedValue(key.toWIF());
+  VrpcProvider.getVerusIdInterface.mockImplementation(chain => ({
+    interface: {
+      chain,
+      getIdentity: (id, ...args) => getIdentity(chain, id, ...args),
+      getInfo: async () => ({
+        result: {chainid: chain, blocks: 12345, longestchain: 12345},
+      }),
+    },
+    getSignatureInfo: (id, signature) => getSignatureInfo(chain, id, signature),
+    verifyGenericRequest: (value, identity) =>
+      verifyGenericRequest(
+        CoinDirectory.getBasicCoinObj(chain),
+        value,
+        identity,
+      ),
+  }));
 });
 
 describe('app encryption envelope validation before key access', () => {
-  it.each([false, true])('rejects a missing recipient before ownership proof (returnESK = %s)', async returnESK => {
-    const value = request({
-      encryptResponseToAddress: undefined,
-      derivationID: compact('channel'),
-      flags: returnESK ? AppEncryptionRequestDetails.FLAG_RETURN_ESK : new BN(0),
-    });
+  it.each([false, true])(
+    'rejects a missing recipient before ownership proof (returnESK = %s)',
+    async returnESK => {
+      const value = request({
+        encryptResponseToAddress: undefined,
+        derivationID: compact('channel'),
+        flags: returnESK
+          ? AppEncryptionRequestDetails.FLAG_RETURN_ESK
+          : new BN(0),
+      });
 
-    await expect(validateGenericRequest(value)).rejects.toThrow('must specify encryptResponseToAddress');
-    expect(requestPrivKey).not.toHaveBeenCalled();
-    expect(getSignatureInfo).not.toHaveBeenCalled();
-  });
+      await expect(validateGenericRequest(value)).rejects.toThrow(
+        'must specify encryptResponseToAddress',
+      );
+      expect(requestPrivKey).not.toHaveBeenCalled();
+      expect(getSignatureInfo).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ['derivationNumber', '-1'],
@@ -102,49 +157,101 @@ describe('app encryption envelope validation before key access', () => {
     ['secondaryDerivationNumber', '-1'],
     ['secondaryDerivationNumber', '2147483648'],
   ])('rejects invalid %s %s before ownership proof', async (field, value) => {
-    await expect(validateGenericRequest(request({[field]: new BN(value)})))
-      .rejects.toThrow('0 to 2147483647');
+    await expect(
+      validateGenericRequest(request({[field]: new BN(value)})),
+    ).rejects.toThrow('0 to 2147483647');
     expect(requestPrivKey).not.toHaveBeenCalled();
     expect(getSignatureInfo).not.toHaveBeenCalled();
   });
 
   it('allows a single-stage spending-key request after validating its fields and proving ownership', async () => {
-    await expect(validateGenericRequest(request({flags: AppEncryptionRequestDetails.FLAG_RETURN_ESK})))
-      .resolves.toBeUndefined();
+    await expect(
+      validateGenericRequest(
+        request({flags: AppEncryptionRequestDetails.FLAG_RETURN_ESK}),
+      ),
+    ).resolves.toBeUndefined();
     expect(requestPrivKey).toHaveBeenCalledTimes(1);
-    expect(verifyGenericRequest.mock.invocationCallOrder[0])
-      .toBeLessThan(requestPrivKey.mock.invocationCallOrder[0]);
+    expect(verifyGenericRequest.mock.invocationCallOrder[0]).toBeLessThan(
+      requestPrivKey.mock.invocationCallOrder[0],
+    );
   });
 
   it('proves full ownership with a usable private key after validating valid fields and the signature', async () => {
     // Keep the envelope and authorization real so this checks their ordering.
     await expect(validateGenericRequest(request())).resolves.toBeUndefined();
     expect(requestPrivKey).toHaveBeenCalledTimes(1);
-    expect(verifyGenericRequest.mock.invocationCallOrder[0])
-      .toBeLessThan(requestPrivKey.mock.invocationCallOrder[0]);
+    expect(verifyGenericRequest.mock.invocationCallOrder[0]).toBeLessThan(
+      requestPrivKey.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('forwards cancellation through authorization and stops before opening wallet keys', async () => {
+    let active = true;
+    verifyGenericRequest.mockImplementationOnce(async () => {
+      active = false;
+      return true;
+    });
+    const context = {
+      assertActive: () => {
+        if (!active) {
+          throw Object.assign(new Error('Request replaced.'), {
+            code: 'SESSION_CHANGED',
+          });
+        }
+      },
+    };
+
+    await expect(
+      validateGenericRequest(request(), context),
+    ).rejects.toMatchObject({code: 'SESSION_CHANGED'});
+    expect(verifyGenericRequest).toHaveBeenCalledTimes(1);
+    expect(requestPrivKey).not.toHaveBeenCalled();
   });
 
   it('rejects a valid explicit-scope envelope whose signer had an outside authority at signing time', async () => {
     const shared = {
-      result: {status: 'active', blockheight: 12344, identity: {
-        primaryaddresses: [key.getAddress(), ECPair.fromPrivateKeyBuffer(Buffer.alloc(32, 2), networks.verus).getAddress()],
-        minimumsignatures: 1,
-        flags: 0,
-      }},
+      result: {
+        status: 'active',
+        blockheight: 12344,
+        identity: {
+          primaryaddresses: [
+            key.getAddress(),
+            ECPair.fromPrivateKeyBuffer(
+              Buffer.alloc(32, 2),
+              networks.verus,
+            ).getAddress(),
+          ],
+          minimumsignatures: 1,
+          flags: 0,
+        },
+      },
     };
     const lookup = getIdentity.getMockImplementation();
-    getIdentity.mockImplementation((chain, identityID, height) => height == null ? lookup(chain, identityID) : shared);
+    getIdentity.mockImplementation((chain, identityID, height) =>
+      height == null ? lookup(chain, identityID) : shared,
+    );
 
-    await expect(validateGenericRequest(request())).rejects.toThrow(/fully control every signing authority/);
+    await expect(validateGenericRequest(request())).rejects.toThrow(
+      /Unsupported authorization signature metadata/,
+    );
     expect(verifyGenericRequest).toHaveBeenCalled();
-    expect(getIdentity).toHaveBeenCalledWith(system.toIAddress(), signer.toIAddress(), 12345);
+    expect(getIdentity).toHaveBeenCalledWith(
+      system.toIAddress(),
+      signer.toIAddress(),
+      12345,
+    );
     expect(requestPrivKey).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])('rejects an unsigned or invalid signature before key access (signed = %s)', async signed => {
-    verifyGenericRequest.mockResolvedValue(false);
+  it.each([false, true])(
+    'rejects an unsigned or invalid signature before key access (signed = %s)',
+    async signed => {
+      verifyGenericRequest.mockResolvedValue(false);
 
-    await expect(validateGenericRequest(request({}, signed))).rejects.toThrow(/signature/);
-    expect(requestPrivKey).not.toHaveBeenCalled();
-  });
+      await expect(validateGenericRequest(request({}, signed))).rejects.toThrow(
+        /signature/,
+      );
+      expect(requestPrivKey).not.toHaveBeenCalled();
+    },
+  );
 });

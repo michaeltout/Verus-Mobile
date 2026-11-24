@@ -29,6 +29,7 @@ import { zGetEncryptionAddress } from "../api/channels/dlight/requests/zGetEncry
 import { getKeyMaterial } from "./getKeyMaterial";
 import { encryptCredentialToDescriptor } from "./encryptDataDescriptor";
 import {cloneIdentityUpdateRequest} from "../identityUpdate/cloneRequest";
+import {assertNoAppAuthorizationCredentials} from '../appAuthorization/requestPolicy';
 
 /**
  * Offline replication of C++ CCrossChainRPCData::GetConditionID(uint160, uint256).
@@ -48,6 +49,43 @@ export const getConditionID = (baseKeyIAddr, uint256Hex) => {
   const chainHash = hash(cidBuf, uint256Buf);
   // SHA256 + RIPEMD160
   return hash160(chainHash);
+};
+
+/** Shared self-encryption derivation for credential writes and verified reads. */
+export const deriveCredentialSelfChannel = async (systemId, subjectIdentity, coinObj, context = {}) => {
+  const assertActive = context.assertActive || (() => {});
+  assertActive();
+  const identity = subjectIdentity.identity || subjectIdentity;
+
+  if (!identity.privateaddress) {
+    throw new Error('Identity must have a z-address (private address) to store encrypted credentials.');
+  }
+
+  const keyMaterial = await getKeyMaterial(systemId, context);
+  assertActive();
+  const derivedAddress = await Tools.deriveShieldedAddress(keyMaterial.extsk, '', coinObj.id);
+  assertActive();
+
+  if (!derivedAddress || derivedAddress !== identity.privateaddress) {
+    throw new Error(
+      'The z-address on this identity does not match the z-address linked to your account. ' +
+      'Credential encryption requires the identity’s z-address to be derived from the same seed as your account’s shielded (Z) address.',
+    );
+  }
+
+  const idHex = Buffer.from(fromBase58Check(identity.identityaddress).hash).toString('hex');
+  const keys = await zGetEncryptionAddress(coinObj.system_id, {...keyMaterial, fromId: idHex, toId: idHex});
+  assertActive();
+
+  if (!keys.address || typeof keys.ivk !== 'string' || !/^[0-9a-f]{64}$/i.test(keys.ivk)) {
+    throw new Error('Failed to derive encryption address for credential encryption.');
+  }
+
+  return {
+    address: keys.address,
+    ivk: keys.ivk,
+    outerKey: toBase58Check(getConditionID(IDENTITY_CREDENTIAL.vdxfid, keys.ivk), I_ADDR_VERSION),
+  };
 };
 
 /**
@@ -72,6 +110,7 @@ export const processEncryptedKeys = async (
   assertActive = () => {},
 ) => {
   assertActive();
+  assertNoAppAuthorizationCredentials(details);
   const credentialKey = IDENTITY_CREDENTIAL.vdxfid;
 
   if (
@@ -87,52 +126,9 @@ export const processEncryptedKeys = async (
     throw new Error("Incorrect credential data format");
   }
 
-  // Validate z-address exists on subject identity
-  const identity = subjectIdentity.identity || subjectIdentity;
-  const privateAddress = identity.privateaddress;
-  if (!privateAddress) {
-    throw new Error(
-      "Identity must have a z-address (private address) to store encrypted credentials."
-    );
-  }
-
-  // Get key material (extended spending key)
-  const keyMaterial = await getKeyMaterial(systemId);
-  assertActive();
-
-  // Validate that the identity's z-address matches the account's dlight seed.
-  // If they differ the account cannot decrypt the stored credentials.
-  // keyMaterial.extsk is already hex (decoded in getKeyMaterial), so call
-  // Tools.deriveShieldedAddress directly rather than getAddresses (which
-  // expects bech32).
-  const derivedAddress = await Tools.deriveShieldedAddress(keyMaterial.extsk, "", coinObj.id);
-  assertActive();
-  if (!derivedAddress || derivedAddress !== privateAddress) {
-    throw new Error(
-      "The z-address on this identity does not match the z-address linked to your account. " +
-      "Credential encryption requires the identity's z-address to be derived from the same seed as your account's shielded (Z) address."
-    );
-  }
-
-  // Convert identity address to 20-byte hex for zGetEncryptionAddress
-  const identityAddress = identity.identityaddress;
-  let idHex = Buffer.from(fromBase58Check(identityAddress).hash).toString("hex");
-  if (idHex.length % 2 !== 0) idHex = "0" + idHex;
-
-  // Derive encryption address (self-encryption: fromId=toId=subject identity)
-  const keys = await zGetEncryptionAddress(coinObj.system_id, {
-    ...keyMaterial,
-    fromId: idHex,
-    toId: idHex,
-  });
-
-  assertActive();
-  if (!keys.address || !keys.ivk) {
-    throw new Error("Failed to derive encryption address for credential encryption.");
-  }
-
-  const encryptionAddress = keys.address;
-  const ivkHex = keys.ivk;
+  const {address: encryptionAddress, outerKey: hashedKeyIAddr} = await deriveCredentialSelfChannel(
+    systemId, subjectIdentity, coinObj, {assertActive},
+  );
 
   const encryptedUniValues = [];
 
@@ -159,10 +155,6 @@ export const processEncryptedKeys = async (
       }
     } else throw new Error("Incorrectly formatted credential entries")
   }
-
-  // Compute hashed key offline (replaces getvdxfid RPC)
-  const hashedKeyHash = getConditionID(credentialKey, ivkHex);
-  const hashedKeyIAddr = toBase58Check(hashedKeyHash, I_ADDR_VERSION);
 
   const modifiedDetails = cloneIdentityUpdateRequest(details);
 

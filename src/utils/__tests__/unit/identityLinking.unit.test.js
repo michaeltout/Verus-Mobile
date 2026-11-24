@@ -110,6 +110,49 @@ test('discovers current address-index matches, deduplicates and marks only same-
   ]);
 });
 
+test('excludes classified storage from manual discovery even if a stale linked entry remains', async () => {
+  mockSaved.linked_ids.VRSC[alice] = 'Alice@';
+  mockSaved.storage_ids = {
+    VRSC: {[alice]: {name: 'Alice@', userIdentityIDs: [carol]}},
+    VRSCTEST: {[bob]: {name: 'Bob.VRSCTEST@', userIdentityIDs: [carol]}},
+  };
+
+  const {identities} = await discover([definition(), definition(bob)]);
+
+  expect(identities.map(identity => identity.identityAddress)).toEqual([bob]);
+  expect(identities[0]).toMatchObject({linked: false, canControl: true});
+  expect(mockLinkIdentity).not.toHaveBeenCalled();
+});
+
+test('reports a stale discovery rejected by the storage gate without claiming a successful link', async () => {
+  const {context, identities} = await discover();
+  mockSaved.storage_ids = {
+    VRSC: {[alice]: {name: 'Alice@', userIdentityIDs: [carol]}},
+  };
+  mockLinkIdentity.mockResolvedValue(false);
+
+  for (const attempt of [1, 2]) {
+    const result = await linkSelectedIdentities({context, identities});
+    expect(result).toEqual({
+      linked: [],
+      failed: [
+        {
+          identity: identities[0],
+          error: expect.objectContaining({
+            message: expect.stringContaining('Connected Apps'),
+          }),
+        },
+      ],
+      refreshError: null,
+    });
+    expect(mockLinkIdentity).toHaveBeenCalledTimes(attempt);
+  }
+  expect(mockSaved.linked_ids.VRSC).toEqual({});
+  expect(mockDispatch).not.toHaveBeenCalled();
+  expect(mockClearLifecycle).not.toHaveBeenCalled();
+  expect(mockRefreshLifecycles).not.toHaveBeenCalled();
+});
+
 test('resolves a shared non-root parent once while preserving full names for saved links', async () => {
   const champions = toIAddress('Champions.VRSC@');
   const nestedAlice = toIAddress('Alice.Champions.VRSC@');

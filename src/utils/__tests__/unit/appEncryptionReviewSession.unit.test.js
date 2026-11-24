@@ -8,6 +8,7 @@ let mockCoins;
 jest.mock('react-native', () => ({
   SafeAreaView: 'SafeAreaView', ScrollView: 'ScrollView',
   TouchableOpacity: 'TouchableOpacity', View: 'View',
+  StyleSheet: {create: value => value},
 }));
 jest.mock('react-native-paper', () => ({Portal: 'Portal', Text: 'Text'}));
 jest.mock('react-native-safe-area-context', () => ({useSafeAreaInsets: () => ({bottom: 0})}));
@@ -134,6 +135,31 @@ it('shows the app scope, primary index, selected user and response recipient', a
   expect(content).not.toContain('Your signing identity');
 });
 
+it('attributes the request to D on behalf of A while the signer action still opens D', async () => {
+  props = {
+    ...props,
+    appOrDelegatorID: 'iScope',
+    appOrDelegatorFqn: 'scope@',
+  };
+  const view = await mount();
+  expect(text(view)).toContain(
+    'requester@ on behalf of scope@ is requesting a private encryption address',
+  );
+  const signerRow = view.root.findAllByType('TouchableOpacity').find(
+    node => node.props.accessibilityLabel ===
+      'requester@ on behalf of scope@. View signer requester@.',
+  );
+  expect(signerRow).toBeDefined();
+  expect(signerRow.props.accessibilityRole).toBe('button');
+  for (const label of signerRow.findAllByType('Text')) {
+    expect(label.props.numberOfLines).toBeUndefined();
+  }
+  act(() => signerRow.props.onPress());
+  await view.root.findByType('IdentityModal').props.loadVerusId();
+  expect(mockGetIdentity).toHaveBeenCalledWith(systemID, 'iSigner');
+  expect(text(view)).toContain('App Scope • iScope');
+});
+
 it('shows an unregistered nested identity and its independent index', async () => {
   props = {...props, hasDerivationID: true, derivationIdentityID: 'iUnregistered', secondaryDerivationNumber: 0};
   const view = await mount();
@@ -256,6 +282,35 @@ it('invalidates a prepared response when the selected identity is no longer elig
   expect(props.next).not.toHaveBeenCalled();
   expect(text(view)).not.toContain('ready to send');
   expect(button(view, 'Approve').props.disabled).toBe(true);
+});
+
+it('keeps approval and its result when replay bookkeeping rewrites the shared encrypted service', async () => {
+  const processing = deferred();
+  mockProcess.mockReturnValueOnce(processing.promise);
+  const view = await mount();
+  let pending;
+  await act(async () => { pending = button(view, 'Approve').props.onPress(); });
+
+  // Reserving the delegated step changes service ciphertext, not linked IDs.
+  mockState.services.stored[VERUSID_SERVICE_ID] = {delegatedReceipt: 'new ciphertext'};
+  expect(mockProcess.mock.calls[0][0].assertActive).not.toThrow();
+  await update(view);
+  expect(mockProcess.mock.calls[0][0].assertActive).not.toThrow();
+  await act(async () => {
+    processing.resolve({
+      responseDetail: {encryptedData: 'frozen ciphertext'},
+      encryptedDescriptorJson: {objectdata: 'frozen ciphertext'},
+    });
+    await pending;
+  });
+
+  expect(text(view)).toContain('ready to send');
+  expect(mockAlert).not.toHaveBeenCalled();
+  await act(async () => button(view, 'Continue').props.onPress());
+  expect(props.next).toHaveBeenCalledWith(
+    expect.objectContaining({details: [{encryptedData: 'frozen ciphertext'}]}), [0],
+  );
+  expect(mockProcess).toHaveBeenCalledTimes(1);
 });
 
 it('keeps the response private until Continue and prevents duplicate approval', async () => {

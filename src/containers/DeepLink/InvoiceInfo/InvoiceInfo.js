@@ -4,6 +4,9 @@ import {Platform, SafeAreaView, ScrollView, TouchableOpacity, View} from 'react-
 import { primitives } from "verusid-ts-client"
 import { Portal, Text } from 'react-native-paper';
 import Button from '../../../components/Button';
+import RequestSigner, {
+  getRequestSignerLabel,
+} from '../../../components/RequestSigner';
 import VerusIdDetailsModal from '../../../components/VerusIdDetailsModal/VerusIdDetailsModal';
 import { getFriendlyNameMap, getIdentity } from '../../../utils/api/channels/verusid/callCreators';
 import { blocksToTime, satsToCoins, unixToDate } from '../../../utils/math';
@@ -58,6 +61,9 @@ const InvoiceInfo = props => {
     signerFqn, 
     signerSystemID,
     signerIdentityID,
+    appOrDelegatorID,
+    appOrDelegatorFqn,
+    request,
     currencyDefinition, 
     amountDisplay, 
     destinationDisplay,
@@ -127,12 +133,12 @@ const InvoiceInfo = props => {
   }
 
   const handleSignerDetailsPress = () => {
-    if (!chain_id || !signerIdentityID) {
+    if (!signerSystemID || !signerIdentityID) {
       createAlert('Signer unavailable', 'No signer identity is available for this invoice.');
       return;
     }
 
-    openVerusIdDetailsModal(chain_id, signerIdentityID);
+    openVerusIdDetailsModal(signerSystemID, signerIdentityID);
   }
 
   const [isListSelectionModalVisible, setIsListSelectionModalVisible] = useState(false);
@@ -303,8 +309,12 @@ const InvoiceInfo = props => {
     } else setLoading(true)
   }, [sendModalType]);
 
-  const requesterLabel = signerFqn || signerIdentityID || 'Unknown signer';
-  const canOpenSignerModal = Boolean(chain_id && signerIdentityID);
+  const signerLabel = signerFqn || signerIdentityID || 'Unknown signer';
+  const signerAttribution = getRequestSignerLabel({
+    ...props,
+    fallback: 'Unknown signer',
+  });
+  const canOpenSignerModal = Boolean(signerSystemID && signerIdentityID);
   
   const isAnyAmount = details.acceptsAnyAmount() || amountDisplay == null;
   const heroAmount = isAnyAmount ? "Any Amount" : amountDisplay;
@@ -429,6 +439,12 @@ const InvoiceInfo = props => {
         {isSigned ? (
           <TouchableOpacity
             style={styles.requesterCard}
+            accessibilityRole={canOpenSignerModal ? 'button' : undefined}
+            accessibilityLabel={
+              canOpenSignerModal
+                ? `${signerAttribution}. View signer ${signerLabel}`
+                : signerAttribution
+            }
             onPress={canOpenSignerModal ? handleSignerDetailsPress : undefined}
             activeOpacity={canOpenSignerModal ? 0.7 : 1}
           >
@@ -442,7 +458,15 @@ const InvoiceInfo = props => {
               </View>
               <View style={styles.requesterTextContainer}>
                 <Text style={styles.requesterLabel}>Request from</Text>
-                <Text style={styles.requesterName}>{requesterLabel}</Text>
+                <RequestSigner
+                  signerFqn={signerFqn}
+                  signerIdentityID={signerIdentityID}
+                  appOrDelegatorID={appOrDelegatorID}
+                  appOrDelegatorFqn={appOrDelegatorFqn}
+                  request={request}
+                  fallback="Unknown signer"
+                  style={styles.requesterName}
+                />
               </View>
               {canOpenSignerModal ? (
                 <MaterialCommunityIcons

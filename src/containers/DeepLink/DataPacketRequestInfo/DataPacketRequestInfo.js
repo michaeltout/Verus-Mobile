@@ -7,6 +7,9 @@ import {
 } from 'react-native';
 import { Checkbox, Text } from 'react-native-paper';
 import Button from '../../../components/Button';
+import RequestSigner, {
+  getRequestSignerLabel,
+} from '../../../components/RequestSigner';
 import { useSelector } from 'react-redux';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {GenericResponse} from 'verus-typescript-primitives';
@@ -27,6 +30,7 @@ import { buildDataPacketResponse } from '../../../utils/deeplink/dataPacket/sign
 import {ensureGenericResponseSigner} from '../../../utils/deeplink/genericResponse/ensureGenericResponseSigner';
 import {getMatchingRequestAccounts} from '../../../utils/deeplink/requestAccounts';
 import {convertFqnToDisplayFormat} from '../../../utils/fullyqualifiedname';
+import {scopedRequestContext} from '../../../utils/deeplink/validator/appEncryptionAuthorization';
 
 const truncateAddress = addr => {
   if (!addr || addr.length <= 14) return addr;
@@ -128,6 +132,8 @@ const DataPacketRequestInfo = props => {
     signerSystemID,
     signerSystemName,
     signerIdentityID,
+    appOrDelegatorID,
+    appOrDelegatorFqn,
     sigtime,
     statements = [],
     signableObjectSummaries = [],
@@ -165,7 +171,14 @@ const DataPacketRequestInfo = props => {
     () => getMatchingRequestAccounts(accounts, requestIsTestnet),
     [accounts, requestIsTestnet],
   );
-  const requesterLabel = signerFqn || signerIdentityID || 'Requester';
+  const requesterProps = {
+    signerFqn,
+    signerIdentityID,
+    appOrDelegatorID,
+    appOrDelegatorFqn,
+    request,
+  };
+  const requesterLabel = getRequestSignerLabel(requesterProps);
   const sigDateString = sigtime ? unixToDate(sigtime) : null;
   const statementsReviewed = useMemo(
     () => !statements.length || statements.every((_, index) => acknowledgedStatements[index]),
@@ -302,6 +315,10 @@ const DataPacketRequestInfo = props => {
         coinObj,
         identityAddress: selectedIdentity.iAddress,
         dataPacketDetail: detail.data,
+        request,
+        context: request.hasAppOrDelegatorID() ? {...scopedRequestContext(request, {
+          identityID: selectedIdentity.iAddress, systemID: coinObj.system_id,
+        }), detailIndex} : undefined,
       });
 
       updatedResponse.details = updatedResponse.details || [];
@@ -345,7 +362,10 @@ const DataPacketRequestInfo = props => {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Requester</Text>
           </View>
-          <DetailRow title={requesterLabel} subtitle={signerIdentityID} />
+          <DetailRow
+            title={<RequestSigner {...requesterProps} />}
+            subtitle={signerIdentityID}
+          />
           <DetailRow
             title={signerSystemName || signerSystemID}
             subtitle={sigDateString ? `Signed ${sigDateString}` : 'Signed request'}

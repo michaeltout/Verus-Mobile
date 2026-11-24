@@ -426,10 +426,10 @@ export const refreshRegistrationJobs = async requestContext => {
   reconciliationInFlight.add(scopeKey);
 
   try {
-    const jobs = await loadCollection(context, collection => {
-      publishCollection(collection.jobs, context);
-      return collection.jobs;
-    });
+    const {jobs, summaries} = await loadCollection(context, collection => ({
+      jobs: collection.jobs,
+      summaries: publishCollection(collection.jobs, context),
+    }));
 
     const now = Date.now();
     const candidates = Object.values(jobs).filter(job => {
@@ -441,6 +441,10 @@ export const refreshRegistrationJobs = async requestContext => {
     }).sort((a, b) =>
       (reconciliationChecks.get(`${scopeKey}:${a.id}`)?.nextCheck || 0) -
       (reconciliationChecks.get(`${scopeKey}:${b.id}`)?.nextCheck || 0));
+
+    // The initial read already published these jobs. With no reconciliation to
+    // perform, another read would only decrypt and publish the same collection.
+    if (!candidates.length) return summaries;
 
     // Resolve at runtime because the orchestration layer also uses job storage.
     // Keep each refresh bounded when a profile contains many pending names.

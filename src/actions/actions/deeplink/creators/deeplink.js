@@ -1,9 +1,11 @@
 import { SET_DEEPLINK_DATA, SET_DEEPLINK_URL } from "../../../../utils/constants/storeType"
+import {protectAuthorizationTransport} from '../../../../utils/deeplink/privateRequestTransport';
+import {GENERIC_REQUEST_DEEPLINK_VDXF_KEY} from 'verus-typescript-primitives';
 
 export const setDeeplinkUrl = (url, passthrough = null) => {
   return {
     type: SET_DEEPLINK_URL,
-    payload: { url, passthrough }
+    payload: { url: protectAuthorizationTransport(url, true), passthrough }
   }
 }
 
@@ -15,7 +17,12 @@ export const setDeeplinkData = (
 ) => {
   return {
     type: SET_DEEPLINK_DATA,
-    payload: { id, data, fromService, passthrough }
+    payload: {
+      id,
+      data: protectAuthorizationTransport(data, false, id === GENERIC_REQUEST_DEEPLINK_VDXF_KEY.vdxfid),
+      fromService,
+      passthrough,
+    }
   }
 }
 

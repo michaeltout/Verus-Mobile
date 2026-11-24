@@ -148,11 +148,13 @@ export class VerusMobile extends React.Component {
       await loadEthTxReceipts(this.props.dispatch)
 
       this.setLoading(false)
+      return true;
     } catch (err) {
       console.error(err)
 
       Alert.alert("Error", err.message)
       this.setLoading(false)
+      return false;
     }
   }
 
@@ -164,27 +166,35 @@ export class VerusMobile extends React.Component {
     AppState.addEventListener("change", (nextAppState) => this._handleAppStateChange(nextAppState));
 
     const secureStorageInitialization = SecureStorage.initializeWithKeychain();
-    this.initializeStorage(secureStorageInitialization);
+    const storageInitialization = this.initializeStorage(
+      secureStorageInitialization,
+    );
+    let urlEventSequence = 0;
 
-    // Handle deeplinks
+    // Secure storage unlocks before persisted settings and wallet state load.
+    // Wait for the same startup work as the UI before checking request policy.
     Linking.addEventListener("url", async ({ url }) => {
-      try {
-        await secureStorageInitialization;
-      } catch (e) {
-        return;
-      }
+      const eventSequence = ++urlEventSequence;
+      if (
+        !(await storageInitialization) ||
+        eventSequence !== urlEventSequence
+      ) return;
 
       updateDeeplinkUrl(url)
     })
 
     const updateUrlState = async () => {
+      let url;
       try {
-        await secureStorageInitialization;
+        url = await Linking.getInitialURL();
       } catch (e) {
         return;
       }
 
-      const url = await Linking.getInitialURL()
+      // A newer OS link wins over an initial URL that resolves late. A startup
+      // failure is already reported by initializeStorage and must not parse URLs
+      // against the reducer's default settings.
+      if (!(await storageInitialization) || urlEventSequence > 0) return;
 
       updateDeeplinkUrl(url)
     }

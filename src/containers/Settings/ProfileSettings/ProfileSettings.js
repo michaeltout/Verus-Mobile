@@ -489,6 +489,22 @@ class ProfileSettings extends Component {
             />
           )}
         </Portal>
+        {this.props.authorizationJobId && <>
+          <List.Item
+            title="Return to app authorization"
+            description="Your progress is saved. After setting up your Z seed, restart the wallet and continue from Activity."
+            titleNumberOfLines={0}
+            descriptionNumberOfLines={0}
+            accessibilityRole="button"
+            accessibilityHint="Returns to your saved app authorization"
+            right={props => <List.Icon {...props} icon="chevron-right" color={Colors.primaryColor} />}
+            onPress={() => this.props.navigation.navigate('DeepLink', {
+              screen: 'AppAuthorizationRequestInfo',
+              params: {jobId: this.props.authorizationJobId},
+            })}
+          />
+          <Divider />
+        </>}
         {/* TODO: Add back in when more interesting profile data and/or settings are implemented
           <TouchableOpacity onPress={() => this._openSettings(PROFILE_INFO)}>
             <ListItem                       

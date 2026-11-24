@@ -6,10 +6,17 @@ import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityI
 import {reviewStepStyles as localStyles} from '../../../../styles';
 import IdentityStateChangeCard from '../components/IdentityStateChangeCard';
 import {convertFqnToDisplayFormat} from '../../../../utils/fullyqualifiedname';
+import RequestSigner, {
+  getRequestSignerLabel,
+} from '../../../../components/RequestSigner';
 
 // Keep the request context compact so the proposed content is the main task.
 const ReviewStep = ({
   signerFqn,
+  signerSystemID,
+  appOrDelegatorID,
+  appOrDelegatorFqn,
+  request,
   canOpenSignerModal,
   chainId,
   sigDateString,
@@ -37,14 +44,29 @@ const ReviewStep = ({
       {signerFqn ? (
         <TouchableOpacity
           accessibilityRole="button"
-          accessibilityLabel={`View requester ${signerFqn}`}
+          accessibilityLabel={`${getRequestSignerLabel({
+            signerFqn,
+            signerIdentityID,
+            appOrDelegatorID,
+            appOrDelegatorFqn,
+            request,
+          })}. View signer ${signerFqn || signerIdentityID}`}
           disabled={!canOpenSignerModal}
-          onPress={() => openVerusIdDetailsModal(chainId, signerIdentityID)}
+          onPress={() =>
+            openVerusIdDetailsModal(signerSystemID, signerIdentityID)
+          }
           style={localStyles.requester}
         >
           <View style={localStyles.requesterText}>
             <Text allowFontScaling style={styles.subtitle}>Request from</Text>
-            <Text allowFontScaling style={localStyles.requesterName}>{signerFqn}</Text>
+            <RequestSigner
+              signerFqn={signerFqn}
+              signerIdentityID={signerIdentityID}
+              appOrDelegatorID={appOrDelegatorID}
+              appOrDelegatorFqn={appOrDelegatorFqn}
+              request={request}
+              style={localStyles.requesterName}
+            />
           </View>
           {canOpenSignerModal && <MaterialCommunityIcons name="chevron-right" size={22} color={Colors.primaryColor} />}
         </TouchableOpacity>

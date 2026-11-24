@@ -43,6 +43,13 @@ jest.mock('../../crypto/encryptCredentials', () => ({processEncryptedKeys: jest.
 jest.mock('../../deeplink/genericResponse/ensureGenericResponseSigner', () => ({
   ensureGenericResponseSigner: jest.fn(),
 }));
+jest.mock('../../deeplink/validator/appEncryptionAuthorization', () => ({
+  assertAppEncryptionAuthorization: jest.fn(),
+  scopedRequestContext: options => options,
+}));
+jest.mock('../../appAuthorization/requestPolicy', () => ({
+  assertNoDirectAuthorizationBucketUpdates: jest.fn(async () => {}),
+}));
 jest.mock('../../vrpc/fundRawTransactionError', () => ({
   showFundRawTransactionErrorAlert: () => false,
 }));

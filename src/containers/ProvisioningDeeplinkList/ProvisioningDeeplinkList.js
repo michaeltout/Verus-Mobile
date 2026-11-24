@@ -16,8 +16,11 @@ import {
   getPendingDeeplinkPassthrough,
   loadPendingDeeplinkRequests,
   PENDING_REQUEST_KIND_SPENDABLE_KEY,
+  PENDING_REQUEST_KIND_APP_AUTHORIZATION,
   removePendingDeeplinkRequest,
 } from '../../utils/deeplink/pendingDeeplinkStorage';
+
+const MINIMUM_TOUCH_TARGET = 44;
 
 const formatDate = timestamp => {
   if (!timestamp) return null;
@@ -34,6 +37,9 @@ const getRequestTitle = request => {
 
   if (request.requestKind === PENDING_REQUEST_KIND_SPENDABLE_KEY) {
     return 'Spendable key claim';
+  }
+  if (request.requestKind === PENDING_REQUEST_KIND_APP_AUTHORIZATION) {
+    return 'App authorization';
   }
 
   return 'Pending request';
@@ -67,7 +73,9 @@ const ProvisioningDeeplinkList = props => {
     dispatch(
       setDeeplinkData(
         GENERIC_REQUEST_DEEPLINK_VDXF_KEY.vdxfid,
-        request.requestBufferString,
+        request.requestKind === PENDING_REQUEST_KIND_APP_AUTHORIZATION
+          ? {authorizationPendingId: request.id}
+          : request.requestBufferString,
         request.fromService || null,
         {
           fqnToAutoLink: request.fqnToAutoLink || null,
@@ -92,7 +100,9 @@ const ProvisioningDeeplinkList = props => {
   const confirmRemoveRequest = request => {
     Alert.alert(
       'Remove pending request?',
-      'You may lose the ability to resume this request if you remove it.',
+      request.requestKind === PENDING_REQUEST_KIND_APP_AUTHORIZATION
+        ? 'You may no longer be able to continue this saved request. Authorization work already started remains in Activity.'
+        : 'You may lose the ability to resume this request if you remove it.',
       [
         {text: 'Cancel', style: 'cancel'},
         {
@@ -112,13 +122,14 @@ const ProvisioningDeeplinkList = props => {
     <SafeAreaView style={styles.container}>
       {loading ? (
         <View style={styles.centerContent}>
-          <ActivityIndicator size="large" color={Colors.primaryColor} />
+          <ActivityIndicator size="large" color={Colors.primaryColor}
+            accessibilityLabel="Loading saved requests" />
         </View>
       ) : requests.length === 0 ? (
         <View style={styles.centerContent}>
           <Text style={styles.emptyTitle}>No pending requests</Text>
           <Text style={styles.emptySubtitle}>
-            Saved spendable keys will appear here after they are opened.
+            Saved app authorizations and spendable key claims appear here.
           </Text>
         </View>
       ) : (
@@ -128,16 +139,26 @@ const ProvisioningDeeplinkList = props => {
           {requests.map(request => {
             const savedDate = formatDate(request.createdAt);
             const completedDate = formatDate(request.completedAt);
+            const title = getRequestTitle(request);
+            const status = request.completed ? 'Completed' : 'Pending';
+            const savedDescription = request.completed && completedDate
+              ? `Completed ${completedDate}`
+              : savedDate
+              ? `Saved ${savedDate}`
+              : 'Saved pending request';
 
             return (
               <View key={request.id} style={styles.itemRow}>
                 <TouchableOpacity
                   style={styles.itemContent}
                   onPress={() => openRequest(request)}
-                  activeOpacity={0.75}>
+                  activeOpacity={0.75}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${title}. ${status}. ${savedDescription}`}
+                  accessibilityHint="Opens this saved request">
                   <View style={styles.itemHeader}>
-                    <Text style={styles.itemTitle} numberOfLines={1}>
-                      {getRequestTitle(request)}
+                    <Text style={styles.itemTitle}>
+                      {title}
                     </Text>
                     <View
                       style={[
@@ -149,22 +170,19 @@ const ProvisioningDeeplinkList = props => {
                           styles.statusText,
                           request.completed && styles.completedText,
                         ]}>
-                        {request.completed ? 'Completed' : 'Pending'}
+                        {status}
                       </Text>
                     </View>
                   </View>
-                  <Text style={styles.itemSubtitle} numberOfLines={1}>
-                    {request.completed && completedDate
-                      ? `Completed ${completedDate}`
-                      : savedDate
-                      ? `Saved ${savedDate}`
-                      : 'Saved pending request'}
-                  </Text>
+                  <Text style={styles.itemSubtitle}>{savedDescription}</Text>
                 </TouchableOpacity>
                 <IconButton
                   icon="close"
                   size={22}
                   iconColor={Colors.verusDarkGray}
+                  style={styles.removeButton}
+                  accessibilityLabel={`Remove saved ${title}`}
+                  accessibilityHint="Asks before removing this saved request"
                   onPress={() => confirmRemoveRequest(request)}
                 />
               </View>
@@ -194,7 +212,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   emptySubtitle: {
-    color: Colors.verusDarkGray,
+    color: Colors.quaternaryColor,
     fontSize: 14,
     marginTop: 8,
     textAlign: 'center',
@@ -218,22 +236,21 @@ const styles = StyleSheet.create({
   },
   itemContent: {
     flex: 1,
+    minHeight: MINIMUM_TOUCH_TARGET,
     paddingLeft: 14,
     paddingVertical: 12,
   },
   itemHeader: {
-    alignItems: 'center',
-    flexDirection: 'row',
+    alignItems: 'flex-start',
   },
   itemTitle: {
     color: Colors.primaryColor,
-    flex: 1,
     fontSize: 16,
     fontWeight: '600',
-    marginRight: 10,
+    flexShrink: 1,
   },
   itemSubtitle: {
-    color: Colors.verusDarkGray,
+    color: Colors.quaternaryColor,
     fontSize: 13,
     marginTop: 6,
   },
@@ -242,6 +259,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 4,
+    marginTop: 6,
   },
   completedBadge: {
     backgroundColor: '#E7F6EF',
@@ -252,7 +270,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   completedText: {
-    color: Colors.verusGreenColor,
+    color: Colors.quaternaryColor,
+  },
+  removeButton: {
+    width: MINIMUM_TOUCH_TARGET,
+    height: MINIMUM_TOUCH_TARGET,
+    margin: 6,
   },
 });
 

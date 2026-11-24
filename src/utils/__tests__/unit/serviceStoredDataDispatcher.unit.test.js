@@ -16,6 +16,10 @@ jest.mock('../../../store', () => ({
 
 jest.mock('../../asyncStore/serviceStoredDataStorage', () => ({
   deleteServiceStoredDataForUser: jest.fn(),
+  loadServiceStoredData: jest.fn(async () => ({
+    account: {...mockStoredData},
+    other: {giftcards: 'other-profile-ciphertext'},
+  })),
   loadServiceStoredDataForUser: jest.fn(async () => ({
     ...mockStoredData,
   })),
@@ -49,9 +53,12 @@ jest.mock('../../../actions/actions/services/creators/services', () => ({
 
 import {modifyServiceStoredDataForUser} from '../../../actions/actions/services/dispatchers/services';
 import {
+  loadServiceStoredData,
   loadServiceStoredDataForUser,
   storeServiceStoredDataForUser,
 } from '../../asyncStore/serviceStoredDataStorage';
+import {encryptkey} from '../../seedCrypt';
+import store from '../../../store';
 
 describe('service stored data dispatcher', () => {
   beforeEach(() => {
@@ -94,8 +101,26 @@ describe('service stored data dispatcher', () => {
       first: true,
       second: true,
     });
-    expect(loadServiceStoredDataForUser).toHaveBeenCalledTimes(2);
+    expect(loadServiceStoredData).toHaveBeenCalledTimes(2);
+    expect(loadServiceStoredDataForUser).not.toHaveBeenCalled();
     expect(storeServiceStoredDataForUser).toHaveBeenCalledTimes(2);
+    expect(storeServiceStoredDataForUser.mock.calls[0][2]).toEqual({
+      account: {giftcards: JSON.stringify({cards: {}})},
+      other: {giftcards: 'other-profile-ciphertext'},
+    });
+  });
+
+  it('does not encrypt, persist, or publish an unchanged functional update', async () => {
+    await expect(modifyServiceStoredDataForUser(
+      current => current,
+      'giftcards',
+      'account',
+    )).resolves.toEqual({cards: {}});
+
+    expect(loadServiceStoredData).toHaveBeenCalledTimes(1);
+    expect(encryptkey).not.toHaveBeenCalled();
+    expect(storeServiceStoredDataForUser).not.toHaveBeenCalled();
+    expect(store.dispatch).not.toHaveBeenCalled();
   });
 
   it('does not persist an originating account update after the session changes', async () => {

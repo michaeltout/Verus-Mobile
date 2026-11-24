@@ -18,6 +18,7 @@ import {
   SEND_MODAL_FORM_STEP_FORM,
   SEND_MODAL_FORM_STEP_RESULT,
   SEND_MODAL_PRICE_ESTIMATE,
+  SEND_MODAL_BEFORE_SEND,
 } from '../../../../utils/constants/sendModal';
 import {
   coinsToSats,
@@ -424,7 +425,7 @@ function ConvertOrCrossChainSendConfirm({
         sendModal.coinObj,
         activeAccount,
         sendModal.subWallet.api_channels[API_SEND],
-        params
+        {...params, beforeSend: sendModal.data[SEND_MODAL_BEFORE_SEND]},
       );
 
       if (res.err) throw new Error(res.result);

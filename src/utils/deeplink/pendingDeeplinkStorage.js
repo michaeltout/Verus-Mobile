@@ -1,13 +1,16 @@
 import {
   GenericRequest,
+  APP_AUTHORIZATION_REQUEST_VDXF_KEY,
   SPENDABLE_KEY_DETAILS_VDXF_KEY,
   SpendableKeyDetailsOrdinalVDXFObject,
 } from 'verus-typescript-primitives';
 import {DEEPLINK_STORAGE_INTERNAL_KEY} from '../../../env/index';
 import {sha256} from '../crypto/hash';
 import {SecureStorage} from '../keychain/secureStore';
+import {hasAuthorizationDetails} from './privateRequestTransport';
 
 export const PENDING_REQUEST_KIND_SPENDABLE_KEY = SPENDABLE_KEY_DETAILS_VDXF_KEY.vdxfid;
+export const PENDING_REQUEST_KIND_APP_AUTHORIZATION = APP_AUTHORIZATION_REQUEST_VDXF_KEY.vdxfid;
 
 const loadRawRequests = async () => {
   const stored = await SecureStorage.getItem(DEEPLINK_STORAGE_INTERNAL_KEY);
@@ -63,6 +66,15 @@ const updatePendingRequests = updater => {
 
 // Imported spendable material may not be recoverable from the wallet seed.
 const getPendingRequestInfo = request => {
+  // Preserve the complete signed envelope, including a nested gift. It must
+  // resume the authorization job instead of opening an independent gift flow.
+  if (hasAuthorizationDetails(request)) {
+    return {
+      requestKind: PENDING_REQUEST_KIND_APP_AUTHORIZATION,
+      title: 'Continue app authorization',
+    };
+  }
+
   const spendableKeyDetail = request.details.find(
     detail => detail instanceof SpendableKeyDetailsOrdinalVDXFObject &&
       Buffer.isBuffer(detail.data?.data) && detail.data.data.length > 0,

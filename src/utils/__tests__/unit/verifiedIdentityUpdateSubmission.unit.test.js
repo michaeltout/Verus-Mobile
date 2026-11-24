@@ -5,6 +5,7 @@ const mockPersist = jest.fn();
 const mockSend = jest.fn();
 const mockLookup = jest.fn();
 const mockInfo = jest.fn();
+const mockRequestMany = jest.fn();
 const mockBlock = jest.fn();
 const mockIdentity = jest.fn();
 const mockUnspent = jest.fn();
@@ -13,7 +14,7 @@ jest.mock('../../../store', () => ({__esModule: true, default: {getState: () => 
 jest.mock('../../auth/authBox', () => ({requestServiceStoredData: (...args) => mockRead(...args)}));
 jest.mock('../../../actions/actions/services/dispatchers/services', () => ({modifyServiceStoredDataForUser: (...args) => mockPersist(...args)}));
 jest.mock('../../vrpc/vrpcInterface', () => ({__esModule: true, default: {getEndpoint: () => ({
-  getInfo: mockInfo, getBlock: mockBlock, getIdentity: mockIdentity, getTxOut: mockUnspent, getRawTransaction: mockLookup, sendRawTransaction: mockSend,
+  requestMany: mockRequestMany, getInfo: mockInfo, getBlock: mockBlock, getIdentity: mockIdentity, getTxOut: mockUnspent, getRawTransaction: mockLookup, sendRawTransaction: mockSend,
 })}}));
 jest.mock('../../api/channels/verusid/requests/updateIdentity', () => ({signUpdateIdentityTx: (...args) => mockSign(...args)}));
 
@@ -77,6 +78,16 @@ beforeEach(async () => {
   built = await mockClient.createUpdateIdentityTransaction(identity, ADDRESS, idTx.toHex(), 50,
     [funding], SYSTEM, 0.001, undefined, 100);
   context = captureIdentityUpdateContext({systemId: SYSTEM, isTestnet: true, changeAddress: ADDRESS, identityAddress: ID});
+  mockRequestMany.mockImplementation(async (requests, options) => {
+    expect(options).toEqual({cacheMethods: []});
+    return Promise.all(requests.map(request => {
+      const args = request.getParams();
+      if (request.cmd === 'getinfo') return mockInfo(...args);
+      if (request.cmd === 'getidentity') return mockIdentity(...args);
+      if (request.cmd === 'gettxout') return mockUnspent(...args);
+      throw new Error(`Unexpected grouped RPC ${request.cmd}`);
+    }));
+  });
   mockInfo.mockResolvedValue(ok({blocks: 100, longestchain: 999, chainid: SYSTEM}));
   mockIdentity.mockResolvedValue(ok({txid: idTx.getId(), vout: 0}));
   mockUnspent.mockResolvedValue(ok({confirmations: 200}));
@@ -100,6 +111,80 @@ test('signs the original approval and input order, then checks the locally deriv
   expect(mockSign.mock.calls[0][4]).toBe(built.fundingApproval);
   expect(mockSign.mock.calls[0][5]).toEqual({chainId: SYSTEM, nextBlockHeight: 101});
   expect(mockSign.mock.invocationCallOrder[0]).toBeLessThan(mockSend.mock.invocationCallOrder[0]);
+});
+
+test('builds and signs removal of an unrecorded foreign primary key while retaining wallet authority', async () => {
+  const foreignKey = ECPair.fromPrivateKeyBuffer(
+    Buffer.alloc(32, 17),
+    networks.verus,
+  );
+  const foreignAddress = foreignKey.getAddress();
+  const originalApproval = built.fundingApproval;
+  const previous = originalApproval.prevouts.find(
+    input => input.txid === originalApproval.identity.txid,
+  );
+  const oldTransaction = Transaction.fromHex(
+    previous.rawTransaction,
+    networks.verus,
+  );
+  const oldScript = new IdentityScript();
+  oldScript.fromBuffer(
+    oldTransaction.outs[originalApproval.identity.outputIndex].script,
+  );
+  const oldIdentity = oldScript.getIdentity();
+  oldIdentity.setPrimaryAddresses([ADDRESS, foreignAddress]);
+  oldTransaction.outs[originalApproval.identity.outputIndex].script =
+    IdentityScript.fromIdentity(oldIdentity).toBuffer();
+
+  const updatedIdentity = Identity.fromJson(oldIdentity.toJson());
+  updatedIdentity.setPrimaryAddresses([ADDRESS]);
+  const funding = built.utxos.filter(input => input.txid === source.getId());
+  // Use the real builder to bind the mixed old authority and the wallet-only
+  // output into the funding approval. No receipt or source bytes are patched.
+  built = await mockClient.createUpdateIdentityTransaction(
+    updatedIdentity,
+    ADDRESS,
+    oldTransaction.toHex(),
+    50,
+    funding,
+    SYSTEM,
+    0.001,
+    undefined,
+    100,
+  );
+  mockIdentity.mockResolvedValue(
+    ok({
+      txid: oldTransaction.getId(),
+      vout: originalApproval.identity.outputIndex,
+    }),
+  );
+
+  const response = await submit();
+  expect(mockSign).toHaveBeenCalledTimes(1);
+  expect(mockSend).toHaveBeenCalledTimes(1);
+  await expect(getKeys.mock.results[0].value).resolves.toEqual(
+    built.utxos.map(() => [KEY.toWIF()]),
+  );
+  const signed = Transaction.fromHex(mockSend.mock.calls[0][0], networks.verus);
+  expect(signed.ins.every(input => input.script.length > 0)).toBe(true);
+  expect(response.txid).toBe(signed.getId());
+
+  const output = new IdentityScript();
+  output.fromBuffer(signed.outs[0].script);
+  expect(output.getIdentity().toJson()).toMatchObject({
+    primaryaddresses: [ADDRESS],
+    minimumsignatures: 1,
+    recoveryauthority: ID,
+    revocationauthority: ID,
+  });
+  const retainedSource = built.fundingApproval.prevouts.find(
+    input => input.txid === oldTransaction.getId(),
+  );
+  expect(retainedSource.rawTransaction).toBe(oldTransaction.toHex());
+  expect(oldIdentity.toJson().primaryaddresses).toEqual([
+    ADDRESS,
+    foreignAddress,
+  ]);
 });
 
 test('ordinary identity reviews still require an active account', () => {
@@ -246,7 +331,7 @@ test.each(['network', 'identity', 'input', 'expiry'])('a changed %s blocks befor
   if (change === 'input') mockUnspent.mockResolvedValue(ok(null));
   if (change === 'expiry') mockInfo.mockResolvedValue(ok({blocks: 149, chainid: SYSTEM}));
   await expect(submit()).rejects.toThrow();
-  expect(getKeys).not.toHaveBeenCalled();
+  expect(mockSign).not.toHaveBeenCalled();
   expect(mockSend).not.toHaveBeenCalled();
 });
 
@@ -400,7 +485,7 @@ test('a payment key that does not control an approved input stops before signing
 test.each(['recovery', 'revocation'].flatMap(field => [
   [field, 'missing key', 0, 0], [field, 'locked', 2, 0],
   [field, 'countdown', 0, 101], [field, 'elapsed countdown', 0, 100],
-  [field, 'reorganized countdown', 0, 100],
+  [field, 'reorganized countdown', 0, 100], [field, 'changed after signing', 0, 0],
 ]))('changing %s validates the previous authority with %s', async (field, state, flags, timelock) => {
   const authorityId = nameAndParentAddrToIAddr('authority', SYSTEM);
   const different = ECPair.fromPrivateKeyBuffer(Buffer.alloc(32, 14), networks.verus);
@@ -435,9 +520,22 @@ test.each(['recovery', 'revocation'].flatMap(field => [
     if (state === 'reorganized countdown') mockInfo.mockResolvedValue(ok({blocks: 99, chainid: SYSTEM}));
     return ok(authorityTx.toHex());
   });
-  if (state === 'elapsed countdown') {
+  if (state === 'changed after signing') {
+    mockSign.mockImplementationOnce((...args) => {
+      const signed = mockClient.signUpdateIdentityTransaction(...args.slice(1));
+      mockIdentity.mockImplementation(async address => ok({
+        txid: address === ID ? definitionTx.getId() : '55'.repeat(32), vout: 0,
+      }));
+      return signed;
+    });
+    await expect(submit()).rejects.toMatchObject({code: 'REVIEW_CHANGED'});
+    expect(mockSign).toHaveBeenCalledTimes(1);
+    expect(mockLookup).toHaveBeenCalledTimes(1);
+    expect(mockSend).not.toHaveBeenCalled();
+  } else if (state === 'elapsed countdown') {
     await expect(submit()).resolves.toHaveProperty('txid');
     expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockLookup).toHaveBeenCalledTimes(1);
   } else {
     await expect(submit()).rejects.toThrow(state === 'missing key' ? /required signatures/ : /is locked/);
     expect(mockSign).not.toHaveBeenCalled();
@@ -602,5 +700,146 @@ test.each([null, 'replacement-dialog'])('closing or replacing the dialog during 
   await expect(submit()).rejects.toMatchObject({code: 'SESSION_CHANGED'});
   expect(mockSign).not.toHaveBeenCalled();
   expect(mockPersist).not.toHaveBeenCalled();
+  expect(mockSend).not.toHaveBeenCalled();
+});
+
+const prepareBatch = async () => {
+  const storageID = nameAndParentAddrToIAddr('shared-storage', SYSTEM);
+  const wallet = ECPair.fromPrivateKeyBuffer(Buffer.alloc(32, 21), networks.verus);
+  const delegate = ECPair.fromPrivateKeyBuffer(Buffer.alloc(32, 22), networks.verus);
+  const user = Identity.fromJson({version: 3, flags: 0, name: 'subject', parent: SYSTEM, systemid: SYSTEM,
+    primaryaddresses: [ADDRESS], minimumsignatures: 1, recoveryauthority: ID, revocationauthority: ID, timelock: 0});
+  const storage = Identity.fromJson({...user.toJson(), name: 'shared-storage'});
+  const definitions = builder();
+  definitions.addInput(Buffer.alloc(32, 26), 0);
+  definitions.addOutput(script.pubKeyHash.output.encode(fromBase58Check(ADDRESS).hash), 1);
+  definitions.addOutput(IdentityScript.fromIdentity(user).toBuffer(), 0);
+  definitions.addOutput(IdentityScript.fromIdentity(storage).toBuffer(), 0);
+  const previous = definitions.buildIncomplete();
+  const sources = new Map([[previous.getId(), previous], [source.getId(), source]]);
+  mockClient = new VerusIdInterface(SYSTEM, 'https://offline.invalid', undefined, async request => {
+    if (request.method === 'getrawtransaction') return ok(sources.get(request.params[0]).toHex());
+    throw new Error(`Unexpected batch RPC ${request.method}`);
+  });
+  const nextUser = Identity.fromJson({...user.toJson(), primaryaddresses: [wallet.getAddress()]});
+  const nextStorage = Identity.fromJson({...storage.toJson(), primaryaddresses: [wallet.getAddress(), delegate.getAddress()]});
+  built = await mockClient.createUpdateIdentitiesTransaction(
+    [nextUser, nextStorage].map(identity => ({identity, rawIdentityTransaction: previous.toHex(), identityTransactionHeight: 50})),
+    wallet.getAddress(),
+    [{txid: source.getId(), outputIndex: 0, address: ADDRESS, script: source.outs[0].script.toString('hex'), satoshis: source.outs[0].value}],
+    {chainIAddr: SYSTEM, currentHeight: 100, isTestnet: true, useAllFundingInputs: true},
+  );
+  context = captureIdentityUpdateContext({systemId: SYSTEM, isTestnet: true, changeAddress: wallet.getAddress(), identityAddress: ID});
+  mockIdentity.mockImplementation(async identityID => ok({txid: previous.getId(), vout: identityID === ID ? 1 : 2}));
+  return {storageID, wallet, previous};
+};
+
+test('submits two identity updates from one previous transaction using only their old keys', async () => {
+  const {storageID, previous} = await prepareBatch();
+  await expect(submit()).resolves.toHaveProperty('txid');
+  expect(built.fundingApproval.identities).toEqual([
+    {identityAddress: ID, txid: previous.getId(), outputIndex: 1},
+    {identityAddress: storageID, txid: previous.getId(), outputIndex: 2},
+  ]);
+  expect(mockSend).toHaveBeenCalledTimes(1);
+  const transaction = Transaction.fromHex(mockSend.mock.calls[0][0], networks.verus);
+  expect(transaction.ins).toHaveLength(3);
+  expect(transaction.ins.every(input => input.script.length > 0)).toBe(true);
+});
+
+test('rejects a changed second identity even when the first batch identity is still current', async () => {
+  const {previous} = await prepareBatch();
+  mockIdentity.mockImplementation(async identityID => ok({txid: previous.getId(), vout: identityID === ID ? 1 : 3}));
+  await expect(submit()).rejects.toMatchObject({code: 'REVIEW_CHANGED'});
+  expect(mockSign).not.toHaveBeenCalled();
+  expect(mockSend).not.toHaveBeenCalled();
+});
+
+test('rejects the new wallet key when used to authorize a gifted identity input', async () => {
+  const {storageID, wallet} = await prepareBatch();
+  getKeys.mockImplementation(async () => built.utxos.map(input =>
+    [input.address === storageID ? wallet.toWIF() : KEY.toWIF()]));
+  await expect(submit()).rejects.toThrow('required signatures');
+  expect(mockSend).not.toHaveBeenCalled();
+});
+
+test('selects only old input controllers from the mixed donor and future wallet key pool', async () => {
+  const {wallet} = await prepareBatch();
+  getKeys.mockImplementation(async () => built.utxos.map(() => [wallet.toWIF(), KEY.toWIF()]));
+  await expect(submit()).resolves.toHaveProperty('txid');
+  expect(mockSign.mock.calls[0][3]).toEqual(built.utxos.map(() => [KEY.toWIF()]));
+  expect(mockSend).toHaveBeenCalledTimes(1);
+});
+
+
+test('two-ID submission uses two fresh verification groups instead of five repeated passes', async () => {
+  await prepareBatch();
+  await expect(submit()).resolves.toHaveProperty('txid');
+
+  const groups = mockRequestMany.mock.calls.map(([requests]) =>
+    requests.map(request => request.cmd),
+  );
+  const completeGroup = [
+    'getinfo',
+    'getidentity',
+    'getidentity',
+    'gettxout',
+    'gettxout',
+    'gettxout',
+  ];
+  expect(groups).toEqual([
+    ['getinfo'],
+    completeGroup,
+    ['getinfo'],
+    completeGroup,
+    ['getinfo'],
+  ]);
+  // The previous path did five complete passes (seven reads each), plus
+  // two height reads during separate signing-authority collection: 37 reads.
+  expect(groups.flat()).toHaveLength(15);
+  expect(mockIdentity).toHaveBeenCalledTimes(4);
+  expect(mockUnspent).toHaveBeenCalledTimes(6);
+  expect(mockLookup).not.toHaveBeenCalled();
+  expect(mockSend).toHaveBeenCalledTimes(1);
+});
+
+test.each(['identity', 'input', 'expiry', 'reorganization'])(
+  'the final fresh group rejects %s changes during signed-receipt persistence',
+  async change => {
+    await prepareBatch();
+    const persistSignedTransaction = jest.fn(async () => {
+      if (change === 'identity')
+        mockIdentity.mockResolvedValue(ok({txid: '00'.repeat(32), vout: 0}));
+      if (change === 'input') mockUnspent.mockResolvedValue(ok(null));
+      if (change === 'expiry')
+        mockInfo.mockResolvedValue(ok({blocks: 149, chainid: SYSTEM}));
+      if (change === 'reorganization') {
+        mockInfo.mockResolvedValue(ok({blocks: 99, chainid: SYSTEM}));
+        mockIdentity.mockResolvedValue(ok({txid: '00'.repeat(32), vout: 0}));
+      }
+    });
+    const failure = await submitReviewedIdentityUpdate({
+      built,
+      context,
+      getKeys,
+      persistSignedTransaction,
+    }).catch(error => error);
+    if (change === 'expiry') expect(failure.message).toMatch(/expired/);
+    else expect(failure).toMatchObject({code: 'REVIEW_CHANGED'});
+    expect(mockSign).toHaveBeenCalledTimes(1);
+    expect(persistSignedTransaction).toHaveBeenCalledTimes(1);
+    expect(mockSend).not.toHaveBeenCalled();
+  },
+);
+
+test('a changed controller after the final authorization callback is rejected before broadcast', async () => {
+  await prepareBatch();
+  const beforeSend = jest.fn(async () => {
+    mockIdentity.mockResolvedValue(ok({txid: '00'.repeat(32), vout: 0}));
+  });
+  await expect(
+    submitReviewedIdentityUpdate({built, context, getKeys, beforeSend}),
+  ).rejects.toMatchObject({code: 'REVIEW_CHANGED'});
+  expect(beforeSend).toHaveBeenCalledTimes(1);
   expect(mockSend).not.toHaveBeenCalled();
 });

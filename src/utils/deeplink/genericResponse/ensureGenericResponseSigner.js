@@ -1,5 +1,5 @@
 import {
-  CompactAddressObject,
+  CompactIAddressObject,
   VerifiableSignatureData,
 } from 'verus-typescript-primitives';
 
@@ -33,8 +33,10 @@ export const ensureGenericResponseSigner = ({
 
   if (currentSigner == null) {
     response.signature = new VerifiableSignatureData({
-      systemID: CompactAddressObject.fromIAddress(systemID),
-      identityID: CompactAddressObject.fromIAddress(identityID),
+      version: VerifiableSignatureData.DEFAULT_VERSION.clone(),
+      systemID: CompactIAddressObject.fromAddress(systemID),
+      identityID: CompactIAddressObject.fromAddress(identityID),
+      isTestnet: response.isTestnet(),
     });
     response.setSigned();
     return response;
@@ -48,6 +50,10 @@ export const ensureGenericResponseSigner = ({
       `This response is already locked to ${currentSigner.identityID}. ` +
         'All details in one response must use the same identity.',
     );
+  }
+
+  if (!response.signature.version.eq(VerifiableSignatureData.DEFAULT_VERSION)) {
+    throw new Error('Unsupported generic response signature version.');
   }
 
   return response;

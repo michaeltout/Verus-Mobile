@@ -8,6 +8,7 @@ import AnimatedActivityIndicatorBox from '../../../components/AnimatedActivityIn
 import BigNumber from 'bignumber.js';
 import {
   SEND_MODAL_ADVANCED_FORM,
+  SEND_MODAL_BEFORE_SEND,
   SEND_MODAL_AMOUNT_FIELD,
   SEND_MODAL_CONTINUE_IMMEDIATELY,
   SEND_MODAL_CONVERTTO_FIELD,
@@ -36,6 +37,8 @@ import store from '../../../store';
 import { useObjectSelector } from '../../../hooks/useObjectSelector';
 import { NavigationActions } from '@react-navigation/compat';
 import { getVerusPayInvoicePaymentDestination } from '../../../utils/deeplink/verusPayBurnChangePrice';
+import {getGenericResponseSigner} from '../../../utils/deeplink/genericResponse/ensureGenericResponseSigner';
+import {assertAppEncryptionAuthorization, scopedRequestContext} from '../../../utils/deeplink/validator/appEncryptionAuthorization';
 
 const InvoicePaymentConfiguration = props => {
   const {
@@ -46,6 +49,7 @@ const InvoicePaymentConfiguration = props => {
     acceptedSystemsDefinitions,
     next,
     response,
+    request,
     detailIndex
   } = props.route.params;
 
@@ -146,7 +150,18 @@ const InvoicePaymentConfiguration = props => {
         wallet,
       );
 
+      let beforeSend;
+      if (request?.hasAppOrDelegatorID()) {
+        const user = getGenericResponseSigner(response);
+        if (!user) throw new Error('Select the authorizing user identity before paying a delegated app request.');
+        const context = scopedRequestContext(request, user);
+        beforeSend = ({step = 'transfer', receipt} = {}) => assertAppEncryptionAuthorization(request, user, {
+          ...context, executionStep: `payment:${detailIndex}:${step}`, executionReceipt: receipt,
+        });
+      }
+
       openConvertOrCrossChainSendModal(coinObj, wallet, {
+        [SEND_MODAL_BEFORE_SEND]: beforeSend,
         [SEND_MODAL_TO_ADDRESS_FIELD]: destination,
         [SEND_MODAL_AMOUNT_FIELD]: details.acceptsAnyAmount() ? '' : amount.toString(),
         [SEND_MODAL_MEMO_FIELD]: '',

@@ -2,6 +2,7 @@ import {
   SpendableKeyDetailsOrdinalVDXFObject,
 } from 'verus-typescript-primitives';
 import {seedDetailsRequiresPassword} from '../../seedDetails/seedDetails';
+import {getSignedRequestDisplayProps} from './requestDisplayUtils';
 
 export const handleSpendableKeyDetailsVDXFObject = async (
   request,
@@ -16,6 +17,9 @@ export const handleSpendableKeyDetailsVDXFObject = async (
 
   return {
     displayProps: {
+      ...(request.isSigned() && request.hasAppOrDelegatorID()
+        ? await getSignedRequestDisplayProps(request)
+        : {}),
       detailsBufferString: detail.data.toBuffer().toString('hex'),
       requiresPassword: seedDetailsRequiresPassword(detail),
     },

@@ -8,6 +8,7 @@ import { randomBytes } from "../crypto/randomBytes";
 import { getSessionCredential, setSessionCredential } from "../keychain/keychain";
 import { arrayToObject } from "../objectManip";
 import { decryptkey, encryptkey } from "../seedCrypt";
+import {captureSessionScope} from '../../actions/actions/updates/sessionRequests';
 
 const getRequestSessionScope = requestContext =>
   requestContext?.sessionScope ||
@@ -219,6 +220,11 @@ export const requestPersonalData = async (dataType, _password) => {
   }
 }
 
+// Notifications and identity pickers often request the same service together.
+// Share only pending work: plaintext is released when the read settles, and
+// each caller parses its own object so later mutations cannot affect another.
+const pendingServiceReads = new Map();
+
 export const requestServiceStoredData = async (service, _password) => {
   const state = store.getState();
 
@@ -226,20 +232,65 @@ export const requestServiceStoredData = async (service, _password) => {
     throw new Error(
       "You must be signed in to retrieve service stored data for " + service
     );
-  } else if (state.services.stored[service] == null) {
-    return {};
-  } else {
-    const password = _password ? _password : await requestPassword();
-    const data = decryptkey(password, state.services.stored[service]);
+  }
+  if (state.services.stored[service] == null) return {};
 
-    if (data !== false) {
-      try {
-        return JSON.parse(data);
-      } catch (e) {
-        throw new Error("Unable to parse service stored data for " + service);
-      }
-    } else {
-      throw new Error("Unable to decrypt service stored data for " + service);
+  const sessionScope = captureSessionScope(state);
+  const sessionError =
+    'Account changed while service stored data was being requested.';
+  let pending = _password ? null : pendingServiceReads.get(service);
+
+  if (
+    !pending ||
+    pending.accountHash !== sessionScope.accountHash ||
+    pending.sessionEpoch !== sessionScope.sessionEpoch ||
+    pending.sessionKey !== state.authentication.sessionKey ||
+    pending.encryptedData !== state.services.stored[service]
+  ) {
+    pending = {
+      ...sessionScope,
+      sessionKey: state.authentication.sessionKey,
+      encryptedData: state.services.stored[service],
+      promise: (async () => {
+        const password = _password || await requestPasswordForState(
+          state,
+          sessionScope,
+          sessionError,
+        );
+        assertRequestSessionCurrent(sessionScope, sessionError);
+
+        // Password access can overlap a saved update. Use the latest encrypted
+        // value so a removed storage identity cannot reappear from an old read.
+        const encryptedData = store.getState().services.stored[service];
+        if (encryptedData == null) return null;
+        const data = decryptkey(password, encryptedData);
+        if (data === false) {
+          throw new Error("Unable to decrypt service stored data for " + service);
+        }
+        return data;
+      })(),
+    };
+
+    // An explicitly supplied password must be checked independently, including
+    // during password migration; it must never borrow another caller's result.
+    if (!_password) {
+      pendingServiceReads.set(service, pending);
+      const clear = () => {
+        if (pendingServiceReads.get(service) === pending) {
+          pendingServiceReads.delete(service);
+        }
+      };
+      pending.promise.then(clear, clear);
     }
+  }
+
+  const data = await pending.promise;
+  assertRequestSessionCurrent(sessionScope, sessionError);
+  if (data == null) return {};
+
+  try {
+    return JSON.parse(data);
+  } catch (_) {
+    throw new Error("Unable to parse service stored data for " + service);
   }
 };

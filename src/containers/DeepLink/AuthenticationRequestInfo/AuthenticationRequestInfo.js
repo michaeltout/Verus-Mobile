@@ -21,6 +21,9 @@ import {
 } from 'react-native';
 import {Portal, Text} from 'react-native-paper';
 import Button from '../../../components/Button';
+import RequestSigner, {
+  getRequestSignerLabel,
+} from '../../../components/RequestSigner';
 import {useSelector} from 'react-redux';
 import {CommonActions} from '@react-navigation/native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -128,6 +131,8 @@ const AuthenticationRequestInfo = props => {
     signerSystemID,
     signerSystemName,
     signerIdentityID,
+    appOrDelegatorID,
+    appOrDelegatorFqn,
     provisioningDetailsBufferString,
     provisioningDetailIndex,
     cancel,
@@ -192,7 +197,8 @@ const AuthenticationRequestInfo = props => {
     : ROOT_CHAIN_BY_NETWORK.mainnet;
   const defaultRootSystemId =
     CoinDirectory.getBasicCoinObj(defaultRootChainId).system_id;
-  const requesterLabel = signerFqn || 'An app';
+  const signerLabel = signerFqn || signerIdentityID || 'An app';
+  const signerAttribution = getRequestSignerLabel({...props, fallback: 'An app'});
 
   // Identity constraint filtering (mirrored from AuthenticationRequestIdentity)
   const recipientConstraints =
@@ -293,7 +299,7 @@ const AuthenticationRequestInfo = props => {
     return requiredSystemIds.every(systemId => resolvedSystemNames[systemId]);
   }, [requiredSystemIds, resolvedSystemNames]);
   const signerChainId = resolvedSystemNames[signerSystemID] || signerSystemName;
-  const canOpenSignerModal = signerChainId && signerIdentityID;
+  const canOpenSignerModal = Boolean(signerSystemID && signerIdentityID);
   const systemLabel = signerChainId || signerSystemID;
 
   const requiredIds = useMemo(() => {
@@ -1198,10 +1204,16 @@ const AuthenticationRequestInfo = props => {
         {(signerFqn || sigDateString || systemLabel) && (
           <TouchableOpacity
             style={styles.requesterCard}
+            accessibilityRole={canOpenSignerModal ? 'button' : undefined}
+            accessibilityLabel={
+              canOpenSignerModal
+                ? `${signerAttribution}. View signer ${signerLabel}`
+                : signerAttribution
+            }
             onPress={
               canOpenSignerModal
                 ? () =>
-                    openVerusIdDetailsModal(signerChainId, signerIdentityID)
+                    openVerusIdDetailsModal(signerSystemID, signerIdentityID)
                 : undefined
             }
             activeOpacity={canOpenSignerModal ? 0.7 : 1}>
@@ -1215,7 +1227,15 @@ const AuthenticationRequestInfo = props => {
               </View>
               <View style={styles.requesterTextContainer}>
                 <Text style={styles.requesterLabel}>Request from</Text>
-                <Text style={styles.requesterName}>{requesterLabel}</Text>
+                <RequestSigner
+                  signerFqn={signerFqn}
+                  signerIdentityID={signerIdentityID}
+                  appOrDelegatorID={appOrDelegatorID}
+                  appOrDelegatorFqn={appOrDelegatorFqn}
+                  request={request}
+                  fallback="An app"
+                  style={styles.requesterName}
+                />
               </View>
               {canOpenSignerModal && (
                 <MaterialCommunityIcons

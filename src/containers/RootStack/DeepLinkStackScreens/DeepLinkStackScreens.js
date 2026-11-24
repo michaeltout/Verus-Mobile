@@ -7,14 +7,27 @@ import GenericRequestComplete from '../../DeepLink/GenericRequestComplete/Generi
 import LoginRequestIdentity from '../../DeepLink/LoginRequestIdentity/LoginRequestIdentity';
 import LoginRequestComplete from '../../DeepLink/LoginRequestComplete/LoginRequestComplete';
 import InvoicePaymentConfiguration from '../../DeepLink/InvoicePaymentConfiguration/InvoicePaymentConfiguration';
+import AppAuthorizationRequestInfo from '../../DeepLink/AppAuthorizationRequestInfo/AppAuthorizationRequestInfo';
+import LinkedAppInstances from '../../DeepLink/LinkedAppInstances/LinkedAppInstances';
 
 const DeepLinkStack = createStackNavigator();
 
 const DeepLinkStackScreens = props => {
   return (
     <DeepLinkStack.Navigator
+      initialRouteName="VerifyDeepLink"
       screenOptions={defaultHeaderOptions}
     >
+      <DeepLinkStack.Screen
+        name="AppAuthorizationRequestInfo"
+        component={AppAuthorizationRequestInfo}
+        options={{title: 'App authorization', headerBackTitleVisible: false, headerRight: () => null}}
+      />
+      <DeepLinkStack.Screen
+        name="LinkedAppInstances"
+        component={LinkedAppInstances}
+        options={{headerShown: false}}
+      />
       <DeepLinkStack.Screen
         name="VerifyDeepLink"
         component={DeepLink}

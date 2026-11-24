@@ -6,6 +6,7 @@
  */
 
 import { useState, useEffect, useMemo, useRef } from 'react';
+import {isEqual} from 'lodash';
 import {
   SafeAreaView,
   ScrollView,
@@ -14,6 +15,9 @@ import {
 } from 'react-native';
 import { Portal, Text } from 'react-native-paper';
 import Button from '../../../components/Button';
+import RequestSigner, {
+  getRequestSignerLabel,
+} from '../../../components/RequestSigner';
 import { useSelector } from 'react-redux';
 import { GenericResponse } from 'verus-typescript-primitives';
 import AnimatedActivityIndicatorBox from '../../../components/AnimatedActivityIndicatorBox';
@@ -222,9 +226,24 @@ const IdentityPickerSheet = ({
 
 // ── Detail Row Component ──
 
-const DetailRow = ({ title, subtitle, onPress, rightIcon, showBorder, isWarning }) => {
+const DetailRow = ({
+  title,
+  subtitle,
+  onPress,
+  rightIcon,
+  showBorder,
+  isWarning,
+  accessibilityLabel,
+}) => {
   const Wrapper = onPress ? TouchableOpacity : View;
-  const wrapperProps = onPress ? { onPress, activeOpacity: 0.7 } : {};
+  const wrapperProps = onPress
+    ? {
+        onPress,
+        activeOpacity: 0.7,
+        accessibilityRole: 'button',
+        accessibilityLabel,
+      }
+    : {};
   return (
     <Wrapper
       style={[
@@ -270,6 +289,8 @@ const AppEncryptionRequestSession = (props) => {
     signerSystemID,
     signerSystemName,
     signerIdentityID,
+    appOrDelegatorID,
+    appOrDelegatorFqn,
     sigtime,
     derivationNumber,
     secondaryDerivationNumber,
@@ -322,9 +343,7 @@ const AppEncryptionRequestSession = (props) => {
   const activeApproval = useRef(null);
   const sending = useRef(false);
   const requestHex = request.toBuffer().toString('hex');
-  const linkedIdsVersion = JSON.stringify(encryptedIds);
-  const linkedIdsLoaded = signedIn && linkedIdentityData != null &&
-    linkedIdentityData.source === encryptedIds;
+  const linkedIdsLoaded = signedIn && linkedIdentityData != null;
   const linkedIds = linkedIdsLoaded ? linkedIdentityData.ids : EMPTY_IDENTITIES;
   const constraints = useMemo(() => {
     try {
@@ -377,7 +396,15 @@ const AppEncryptionRequestSession = (props) => {
   }, [review]);
 
   // ── Derived values ──
-  const requesterLabel = signerFqn || 'An application';
+  const requesterProps = {
+    signerFqn,
+    signerIdentityID,
+    appOrDelegatorID,
+    appOrDelegatorFqn,
+    request,
+  };
+  const requesterLabel = getRequestSignerLabel(requesterProps);
+  const signerLabel = signerFqn || signerIdentityID || 'request signer';
   const requesterAddress = signerFqn ? signerIdentityID : null;
   const sigDateString = sigtime ? unixToDate(sigtime) : null;
   const chainId = signerSystemName || signerSystemID;
@@ -401,10 +428,15 @@ const AppEncryptionRequestSession = (props) => {
           VERUSID_SERVICE_ID,
         );
         if (active && getAppEncryptionSessionKey(store.getState()) === sessionKey) {
-          setLinkedIdentityData({ source: encryptedIds, ids: verusIdServiceData.linked_ids || {} });
+          const ids = verusIdServiceData.linked_ids || {};
+          // Authorization receipts share this encrypted service. Only changed
+          // linked identities invalidate an approval, not unrelated ciphertext.
+          setLinkedIdentityData(previous => (
+            isEqual(previous?.ids, ids) ? previous : {ids}
+          ));
         }
       } catch (e) {
-        if (active) setLinkedIdentityData({ source: encryptedIds, ids: {} });
+        if (active) setLinkedIdentityData({ids: {}});
       }
     };
 
@@ -550,7 +582,6 @@ const AppEncryptionRequestSession = (props) => {
           return mounted.current && currentReview.current === review &&
             activeApproval.current === approval &&
             getAppEncryptionSessionKey(store.getState()) === sessionKey &&
-            JSON.stringify(store.getState().services.stored[VERUSID_SERVICE_ID]) === linkedIdsVersion &&
             request.toBuffer().toString('hex') === requestHex;
         } catch (e) {
           return false;
@@ -647,6 +678,18 @@ const AppEncryptionRequestSession = (props) => {
     setLoading(true);
     try {
       pendingResponse.approval.assertActive();
+      const currentIds = (
+        await requestServiceStoredData(VERUSID_SERVICE_ID)
+      ).linked_ids || {};
+      pendingResponse.approval.assertActive();
+      setLinkedIdentityData(previous => (
+        isEqual(previous?.ids, currentIds) ? previous : {ids: currentIds}
+      ));
+      if (!Object.prototype.hasOwnProperty.call(
+        currentIds[selectedIdentity.chainId] || {}, selectedIdentity.iAddress,
+      )) {
+        throw Object.assign(new Error('The selected identity is no longer linked.'), {code: 'SESSION_CHANGED'});
+      }
       await next(pendingResponse.updatedResponse, pendingResponse.handledIndices);
     } catch (e) {
       if (!pendingResponse.approval.isActive() || e.code === 'SESSION_CHANGED') return;
@@ -905,10 +948,13 @@ const AppEncryptionRequestSession = (props) => {
             <Text style={styles.sectionTitle}>Request Details</Text>
           </View>
 
-          {/* Requesting App */}
+          {/* The signer stays distinct from the app it represents. */}
           <DetailRow
-            title={requesterLabel}
-            subtitle={`Requesting App${requesterAddress ? ` • ${truncateAddress(requesterAddress)}` : ''}`}
+            title={<RequestSigner {...requesterProps} />}
+            subtitle={`View signer ${signerLabel}${
+              requesterAddress ? ` • ${truncateAddress(requesterAddress)}` : ''
+            }`}
+            accessibilityLabel={`${requesterLabel}. View signer ${signerLabel}.`}
             onPress={signerSystemID && signerIdentityID ? openSignerModal : undefined}
             rightIcon={signerSystemID && signerIdentityID ? 'chevron-right' : undefined}
             showBorder={false}

@@ -1,5 +1,9 @@
 let mockState;
 let mockSignerSystemID;
+let mockScopedRequest;
+let mockResponseUris;
+const mockLoadDelegatedResponse = jest.fn();
+const mockExperimentalGate = jest.fn();
 const mockDispatch = jest.fn();
 const mockEncrypt = jest.fn();
 const mockSign = jest.fn();
@@ -8,8 +12,16 @@ const mockPost = jest.fn();
 const mockMarkComplete = jest.fn();
 const mockAlert = jest.fn();
 const mockCoinLookup = jest.fn();
+const mockOpenURL = jest.fn();
 
-jest.mock('react-native', () => ({Platform: {OS: 'ios'}, SafeAreaView: 'SafeAreaView', View: 'View', TouchableOpacity: 'TouchableOpacity', Clipboard: {setString: jest.fn()}}));
+jest.mock('react-native', () => ({
+  Platform: {OS: 'ios'},
+  SafeAreaView: 'SafeAreaView',
+  View: 'View',
+  TouchableOpacity: 'TouchableOpacity',
+  Clipboard: {setString: jest.fn()},
+  Linking: {openURL: (...args) => mockOpenURL(...args)},
+}));
 jest.mock('react-native-paper', () => ({Text: 'Text'}));
 jest.mock('react-native-safe-area-context', () => ({useSafeAreaInsets: () => ({bottom: 0})}));
 jest.mock('react-native-vector-icons/MaterialCommunityIcons', () => 'Icon');
@@ -28,7 +40,6 @@ jest.mock('../../../components/AnimatedActivityIndicatorBox', () => 'Loading');
 jest.mock('../../../styles', () => ({genericRequestCompleteStyles: {}}));
 jest.mock('axios', () => ({post: (...args) => mockPost(...args)}));
 jest.mock('react-native-url-polyfill', () => ({URL: require('url').URL}));
-jest.mock('../../linking', () => ({openUrl: jest.fn()}));
 jest.mock('../../CoinData/CoinData', () => ({getSystemNameFromSystemId: systemID => {
   if (systemID === 'i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV') return 'VRSC';
   throw new Error('Unknown root system');
@@ -40,18 +51,22 @@ jest.mock('../../../actions/actions/alert/dispatchers/alert', () => ({createAler
 jest.mock('../../deeplink/pendingDeeplinkStorage', () => ({markPendingDeeplinkComplete: (...args) => mockMarkComplete(...args)}));
 jest.mock('../../deeplink/genericResponse/encryptGenericResponseDetails', () => ({encryptGenericResponseDetails: (...args) => mockEncrypt(...args)}));
 jest.mock('../../deeplink/genericResponse/prepareGenericResponseForSigning', () => ({prepareGenericResponseForSigning: jest.fn()}));
+jest.mock('verusid-ts-client', () => ({hasAppAuthorizationRequest: () => false}));
+jest.mock('../../appAuthorization/delegatedOperations', () => ({loadDelegatedResponse: (...args) => mockLoadDelegatedResponse(...args)}));
+jest.mock('../../deeplink/experimentalDeeplinks', () => ({assertExperimentalGenericRequestAllowed: (...args) => mockExperimentalGate(...args)}));
 jest.mock('../../deeplink/genericResponse/responseDeliverySecurity', () => ({assertNoPlaintextAppEncryptionResponse: jest.fn(), assertSecurePostResponseUri: value => value}));
 jest.mock('../../deeplink/validator/authenticationRequestValidator', () => ({performAfterAuthenticationExpiryCheck: (_, operation) => operation(), signAfterAuthenticationExpiryCheck: (_, operation) => operation()}));
 jest.mock('verus-typescript-primitives', () => ({
   GenericRequest: class {
     fromBuffer() {}
-    responseURIs = [{type: 1, getUriString: () => 'https://example.invalid/response'}];
+    responseURIs = mockResponseUris;
     hasEncryptResponseToAddress() { return false; }
+    hasAppOrDelegatorID() { return mockScopedRequest; }
   },
   GenericResponse: class {
     fromBuffer() {}
     details = [];
-    signature = {systemID: {toIAddress: () => mockSignerSystemID}};
+    signature = {systemID: {toIAddress: () => mockSignerSystemID}, identityID: {toIAddress: () => 'user-identity'}};
     toBuffer() { return Buffer.from('synthetic-response'); }
   },
   ResponseURI: {TYPE_POST: {toNumber: () => 1}, TYPE_REDIRECT: {toNumber: () => 2}},
@@ -84,6 +99,10 @@ beforeEach(() => {
   jest.clearAllMocks();
   views = new Set();
   mockSignerSystemID = 'i5w5MuNik5NtLcYmNzcvaoixooEebB6MGV';
+  mockScopedRequest = false;
+  mockResponseUris = [{type: 1, getUriString: () => 'https://example.invalid/response'}];
+  mockLoadDelegatedResponse.mockReset().mockResolvedValue(null);
+  mockExperimentalGate.mockReset();
   mockCoinLookup.mockReturnValue({id: 'VRSC', system_id: mockSignerSystemID});
   mockState = {authentication: {signedIn: true, activeAccount: {accountHash: 'account'}, sessionEpoch: 1},
     deeplink: {id: 'generic', data: 'aa', requestId: 1, passthrough: {pendingDeeplinkId: 'saved-gift'}}};
@@ -93,8 +112,30 @@ beforeEach(() => {
   mockVerify.mockResolvedValue(true);
   mockPost.mockResolvedValue({});
   mockMarkComplete.mockResolvedValue(undefined);
+  mockOpenURL.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => act(() => views.forEach(view => view.unmount())));
+
+it('propagates redirect launch failure while retaining the exact signed response', async () => {
+  const {
+    deliverGenericResponse,
+  } = require('../../deeplink/genericResponse/deliverGenericResponse');
+  const response = new GenericResponse();
+  const request = {
+    responseURIs: [
+      {type: 2, getUriString: () => 'https://example.invalid/return'},
+    ],
+  };
+  mockOpenURL.mockRejectedValueOnce(new Error('Unable to open URL'));
+
+  await expect(deliverGenericResponse(request, response)).rejects.toThrow(
+    'Unable to open URL',
+  );
+  const destination = new URL(mockOpenURL.mock.calls[0][0]);
+  expect(Buffer.from(destination.searchParams.get('response'), 'base64')).toEqual(
+    response.toBuffer(),
+  );
+});
 
 it('delivers a current response once and clears only its request after completion', async () => {
   const {complete, navigation} = mount();
@@ -104,6 +145,66 @@ it('delivers a current response once and clears only its request after completio
   expect(mockMarkComplete).toHaveBeenCalledWith('saved-gift');
   expect(mockState.deeplink).toMatchObject({id: null, data: {}});
   expect(navigation.dispatch).toHaveBeenCalledTimes(1);
+});
+
+it('delivers a restored delegated response without encrypting or signing it again', async () => {
+  mockScopedRequest = true;
+  const saved = new GenericResponse();
+  saved.toBuffer = () => Buffer.from('frozen-signed-ciphertext');
+  mockLoadDelegatedResponse.mockResolvedValue(saved);
+  const {complete} = mount({appEncryptionSessionKey: getAppEncryptionSessionKey(mockState)});
+  await act(async () => complete());
+  expect(mockEncrypt).not.toHaveBeenCalled();
+  expect(mockSign).not.toHaveBeenCalled();
+  expect(mockVerify).toHaveBeenCalledWith(expect.any(Object), saved);
+  expect(mockPost).toHaveBeenCalledWith('https://example.invalid/response', Buffer.from('frozen-signed-ciphertext'), expect.any(Object));
+});
+
+it.each([false, true])('retains the final signed response for manual export without a callback (restored=%s)', async restored => {
+  mockScopedRequest = true;
+  mockResponseUris = [];
+  const signed = new GenericResponse();
+  const bytes = Buffer.from('frozen-signed-encrypted-response');
+  signed.toBuffer = () => bytes;
+  if (restored) mockLoadDelegatedResponse.mockResolvedValue(signed);
+  else mockSign.mockResolvedValue(signed);
+  const {view, complete, navigation} = mount();
+  await act(async () => complete());
+
+  expect(mockPost).not.toHaveBeenCalled();
+  expect(mockMarkComplete).not.toHaveBeenCalled();
+  expect(navigation.dispatch).not.toHaveBeenCalled();
+  const copy = view.root.findByProps({accessibilityLabel: 'Copy signed response'});
+  act(() => copy.props.onPress());
+  expect(require('react-native').Clipboard.setString).toHaveBeenCalledWith(bytes.toString('hex'));
+  require('react-native').Clipboard.setString.mockClear();
+  mockExperimentalGate.mockImplementation(() => {
+    throw new Error('Experimental requests disabled.');
+  });
+  act(() => copy.props.onPress());
+  expect(require('react-native').Clipboard.setString).not.toHaveBeenCalled();
+  expect(mockAlert).toHaveBeenCalledWith('Error', 'Experimental requests disabled.');
+  const done = view.root.findByType('GradientButton');
+  expect(done.props.children).toBe('Done');
+  await act(async () => done.props.onPress());
+  expect(mockSign).toHaveBeenCalledTimes(restored ? 0 : 1);
+  expect(mockVerify).toHaveBeenCalledTimes(1);
+  expect(mockMarkComplete).toHaveBeenCalledWith('saved-gift');
+  expect(navigation.dispatch).toHaveBeenCalledTimes(1);
+});
+
+it('does not deliver a restored response after experimental requests are disabled during verification', async () => {
+  const verification = deferred();
+  mockScopedRequest = true;
+  mockLoadDelegatedResponse.mockResolvedValue(new GenericResponse());
+  mockVerify.mockReturnValueOnce(verification.promise);
+  const {complete} = mount();
+  let completion;
+  await act(async () => { completion = complete(); });
+  mockExperimentalGate.mockImplementation(() => { throw new Error('Experimental requests disabled.'); });
+  await act(async () => { verification.resolve(true); await completion; });
+  expect(mockPost).not.toHaveBeenCalled();
+  expect(mockMarkComplete).not.toHaveBeenCalled();
 });
 
 it('completes an app-encryption response on the selected PBaaS chain', async () => {

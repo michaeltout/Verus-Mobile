@@ -4,8 +4,25 @@ const mockAlert = jest.fn();
 const mockOpenAuth = jest.fn();
 const mockDispatch = jest.fn();
 const mockRenderGeneric = jest.fn();
+const mockFindAuthorization = jest.fn();
+const mockCreateAuthorization = jest.fn();
+const mockLoadPending = jest.fn();
+const mockFindPreparedResponse = jest.fn();
+const mockExperimentalGate = jest.fn();
 
 jest.mock('react-native', () => ({View: 'View'}));
+jest.mock('react-native-paper', () => ({Text: 'Text'}));
+jest.mock('../../../components/Button', () => 'Button');
+jest.mock('../../deeplink/pendingDeeplinkStorage', () => ({
+  getPendingDeeplinkRequest: (...args) => mockLoadPending(...args), savePendingDeeplinkRequest: jest.fn(),
+}));
+jest.mock('../../appAuthorization/jobs', () => ({
+  createAuthorizationJob: (...args) => mockCreateAuthorization(...args),
+  findAuthorizationJob: (...args) => mockFindAuthorization(...args),
+}));
+jest.mock('../../appAuthorization/delegatedOperations', () => ({
+  findPreparedDelegatedResponse: (...args) => mockFindPreparedResponse(...args),
+}));
 jest.mock('@react-navigation/native', () => ({CommonActions: {reset: value => ({type: 'RESET', ...value})}}));
 jest.mock('react-redux', () => ({useSelector: selector => selector(mockState), useDispatch: () => mockDispatch}));
 jest.mock('../../../hooks/useObjectSelector', () => ({useObjectSelector: selector => selector(mockState)}));
@@ -19,7 +36,7 @@ jest.mock('../../../containers/DeepLink/GenericRequestHome/GenericRequestHome', 
   mockRenderGeneric(props);
   return require('react').createElement('GenericRequestHome', props);
 });
-jest.mock('verusid-ts-client', () => ({primitives: {
+jest.mock('verusid-ts-client', () => ({hasAppAuthorizationRequest: request => request.marker === 'authorization', primitives: {
   IDENTITY_VIEW: {vdxfid: 'identity-view'},
   VERUSPAY_INVOICE_VDXF_KEY: {vdxfid: 'invoice'},
   GENERIC_REQUEST_DEEPLINK_VDXF_KEY: {vdxfid: 'generic'},
@@ -30,18 +47,23 @@ jest.mock('verusid-ts-client', () => ({primitives: {
       this.marker = bytes.toString();
       this.details = this.marker === 'upload'
         ? [{getIAddressKey: () => 'identity', data: {signDataMap: new Map([['content-key', {}]])}}]
-        : [];
+        : this.marker === 'authorization'
+          ? [{getIAddressKey: () => require('verus-typescript-primitives').APP_AUTHORIZATION_REQUEST_VDXF_KEY.vdxfid}]
+          : [];
     }
     isTestnet() { return false; }
-    isSigned() { return ['delegated', 'self-scoped', 'upload'].includes(this.marker); }
-    hasAppOrDelegatorID() { return ['delegated', 'self-scoped', 'unsigned-scoped'].includes(this.marker); }
+    isSigned() { return ['delegated', 'self-scoped', 'upload', 'authorization'].includes(this.marker); }
+    hasAppOrDelegatorID() { return ['delegated', 'self-scoped', 'unsigned-scoped', 'authorization'].includes(this.marker); }
     appOrDelegatorID = {toIAddress: () => this.marker === 'self-scoped' ? 'signing-app' : 'delegated-user'};
     signature = {identityID: {toIAddress: () => 'signing-app'}};
   },
 }}));
 jest.mock('../../../actions/actions/alert/dispatchers/alert', () => ({createAlert: (...args) => mockAlert(...args)}));
 jest.mock('../../../actions/actions/sendModal/dispatchers/sendModal', () => ({openAuthenticateUserModal: (...args) => mockOpenAuth(...args)}));
-jest.mock('../../../actions/actionCreators', () => ({resetDeeplinkData: requestId => ({type: 'RESET_DEEPLINK', ...(requestId == null ? {} : {expectedRequestId: requestId})})}));
+jest.mock('../../../actions/actionCreators', () => ({
+  resetDeeplinkData: requestId => ({type: 'RESET_DEEPLINK', ...(requestId == null ? {} : {expectedRequestId: requestId})}),
+  setDeeplinkData: (id, data, fromService, passthrough) => ({type: 'SET_DEEPLINK_DATA', payload: {id, data, fromService, passthrough}}),
+}));
 jest.mock('../../vrpc/vrpcInterface', () => ({initEndpoint: jest.fn()}));
 jest.mock('../../api/channels/vrpc/callCreators', () => ({getInfo: async () => ({result: {blocks: 100, chainid: 'system-id'}})}));
 jest.mock('../../api/channels/verusid/callCreators', () => ({}));
@@ -51,7 +73,7 @@ jest.mock('../../CoinData/CoinDirectory', () => ({CoinDirectory: {
 jest.mock('../../fullyqualifiedname', () => ({convertFqnToDisplayFormat: value => value}));
 jest.mock('../../math', () => ({}));
 jest.mock('../../deeplink/validator/envelopeValidator', () => ({validateGenericRequest: (...args) => mockValidate(...args)}));
-jest.mock('../../deeplink/experimentalDeeplinks', () => ({assertExperimentalGenericRequestAllowed: jest.fn()}));
+jest.mock('../../deeplink/experimentalDeeplinks', () => ({assertExperimentalGenericRequestAllowed: (...args) => mockExperimentalGate(...args)}));
 jest.mock('../../deeplink/verusPayBurnChangePrice', () => ({}));
 jest.mock('../../deeplink/requestAccounts', () => ({assertRequestNetworkMatchesAccount: jest.fn()}));
 
@@ -86,7 +108,12 @@ const expectNoOldEffects = (closed = false) => {
 beforeEach(() => {
   jest.clearAllMocks();
   mockValidate.mockReset().mockResolvedValue(true);
-  props = {navigation: {dispatch: jest.fn()}};
+  mockFindAuthorization.mockResolvedValue(null);
+  mockCreateAuthorization.mockResolvedValue({id: 'authorization-job'});
+  mockLoadPending.mockResolvedValue({requestBufferString: hex('authorization')});
+  mockFindPreparedResponse.mockReset().mockResolvedValue(null);
+  mockExperimentalGate.mockReset();
+  props = {navigation: {dispatch: jest.fn(), navigate: jest.fn(), replace: jest.fn()}};
   views = new Set();
   mockState = {deeplink: {id: 'generic', data: hex('original'), requestId: 1},
     authentication: {signedIn: true, accounts: [{testnetOverrides: {}}], activeAccount: {testnetOverrides: {}}},
@@ -97,12 +124,135 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
+it('routes bootstrap to its durable job without selecting an authentication signer first', async () => {
+  mockState.deeplink.data = {authorizationPendingId: 'saved-authorization'};
+  await mount();
+  expect(mockValidate).toHaveBeenCalledTimes(1);
+  expect(mockCreateAuthorization).toHaveBeenCalledTimes(1);
+  expect(props.navigation.replace).toHaveBeenCalledWith('AppAuthorizationRequestInfo', {jobId: 'authorization-job'});
+  expect(mockRenderGeneric).not.toHaveBeenCalled();
+});
+
+it('resumes an existing submitted job without applying a fresh approval expiry check', async () => {
+  mockFindAuthorization.mockResolvedValue({id: 'submitted-job'});
+  mockState.deeplink.data = {authorizationPendingId: 'saved-authorization'};
+  await mount();
+  expect(mockValidate).not.toHaveBeenCalled();
+  expect(mockCreateAuthorization).not.toHaveBeenCalled();
+  expect(props.navigation.replace).toHaveBeenCalledWith('AppAuthorizationRequestInfo', {jobId: 'submitted-job'});
+});
+
+it('preserves the encrypted request while a new user creates a profile', async () => {
+  mockState.authentication = {signedIn: false, accounts: [], activeAccount: null};
+  mockState.deeplink.data = {authorizationPendingId: 'saved-authorization'};
+  const view = await mount();
+  expect(mockCreateAuthorization).not.toHaveBeenCalled();
+  await act(async () => view.root.findByType('Button').props.onPress());
+  expect(mockDispatch).toHaveBeenCalledWith({type: 'SET_DEEPLINK_DATA', payload: {
+    id: 'generic', data: {authorizationPendingId: 'saved-authorization'}, fromService: null,
+    passthrough: {resumeAuthorizationAfterSetup: true, authorizationTestnet: false},
+  }});
+  expect(props.navigation.navigate).toHaveBeenCalledWith('SignedOutNoKeyStack', {screen: 'CreateProfile'});
+});
+
+it('routes a completed delegated rescan directly to delivery with the exact prepared bytes', async () => {
+  mockState.deeplink.data = hex('delegated');
+  mockFindPreparedResponse.mockResolvedValue({
+    user: {identityID: 'recorded-user', systemID: 'recorded-system'},
+    response: {toBuffer: () => Buffer.from('frozen signed response')},
+  });
+  await mount();
+  expect(props.navigation.navigate).toHaveBeenCalledWith('GenericRequestComplete', {
+    requestBufferString: hex('delegated'),
+    responseBufferString: hex('frozen signed response'),
+    appEncryptionSessionKey: expect.any(String),
+  });
+  expect(mockValidate).not.toHaveBeenCalled();
+  expect(mockRenderGeneric).not.toHaveBeenCalled();
+  expect(mockCreateAuthorization).not.toHaveBeenCalled();
+});
+
+it('keeps fresh delegated requests on the normal validation and review path', async () => {
+  mockState.deeplink.data = hex('delegated');
+  await mount();
+  expect(mockFindPreparedResponse).toHaveBeenCalledTimes(1);
+  expect(mockValidate).toHaveBeenCalledTimes(1);
+  expect(mockRenderGeneric).toHaveBeenCalled();
+  expect(props.navigation.navigate).not.toHaveBeenCalled();
+});
+
+it('rejects an unapproved delegated request after profile selection before showing its review', async () => {
+  jest.useFakeTimers();
+  mockState.authentication.signedIn = false;
+  mockState.deeplink.data = hex('delegated');
+  const reason = 'No linked identity has a current app approval for this delegate.';
+  mockValidate.mockImplementation(async (request, context) => {
+    context.assertActive();
+    throw new Error(reason);
+  });
+  const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const view = await mount();
+    act(() => jest.advanceTimersByTime(1000));
+    expect(mockOpenAuth).toHaveBeenCalledTimes(1);
+    expect(mockValidate).not.toHaveBeenCalled();
+
+    mockState = {
+      ...mockState,
+      authentication: {...mockState.authentication, signedIn: true},
+    };
+    await act(async () => view.update(<DeepLink {...props} />));
+
+    expect(mockValidate).toHaveBeenCalledWith(
+      expect.objectContaining({marker: 'delegated'}),
+      {assertActive: expect.any(Function)},
+    );
+    expect(mockAlert).toHaveBeenCalledWith('Error', reason);
+    expect(mockRenderGeneric).not.toHaveBeenCalled();
+    expect(mockCreateAuthorization).not.toHaveBeenCalled();
+    expect(props.navigation.navigate).not.toHaveBeenCalled();
+    expect(props.navigation.dispatch).toHaveBeenCalledWith({
+      type: 'RESET', index: 0, routes: [{name: 'SignedInStack'}],
+    });
+  } finally {
+    error.mockRestore();
+  }
+});
+
+it.each(['session', 'network', 'replacement'])('discards a prepared response lookup after %s changes', async change => {
+  const lookup = deferred();
+  mockState.deeplink.data = hex('delegated');
+  mockFindPreparedResponse.mockReturnValueOnce(lookup.promise);
+  const view = await mount();
+  if (change === 'session') mockState.authentication.sessionEpoch = 2;
+  if (change === 'network') mockState.authentication.activeAccount.testnetOverrides = {VRSC: 'VRSCTEST'};
+  if (change === 'replacement') await replace(view);
+  await act(async () => lookup.resolve({response: {toBuffer: () => Buffer.from('old-response')}}));
+  expect(props.navigation.navigate).not.toHaveBeenCalled();
+  expect(mockAlert).not.toHaveBeenCalled();
+});
+
+it('rechecks the experimental gate before reopening a saved response', async () => {
+  const lookup = deferred();
+  mockState.deeplink.data = hex('delegated');
+  mockFindPreparedResponse.mockReturnValueOnce(lookup.promise);
+  await mount();
+  mockExperimentalGate.mockImplementation(() => { throw new Error('Experimental requests disabled.'); });
+  await act(async () => lookup.resolve({response: {toBuffer: () => Buffer.from('saved-response')}}));
+  expect(props.navigation.navigate).not.toHaveBeenCalled();
+  expect(mockRenderGeneric).not.toHaveBeenCalled();
+  expect(mockAlert).toHaveBeenCalledWith('Error', 'Experimental requests disabled.');
+});
+
 it.each(['resolve', 'reject'])('ignores an old generic validation %s after a replacement is displayed', async outcome => {
   const old = deferred();
   mockValidate.mockReturnValueOnce(old.promise);
   const view = await mount();
+  const validationContext = mockValidate.mock.calls[0][1];
+  expect(() => validationContext.assertActive()).not.toThrow();
   expect(mockRenderGeneric).not.toHaveBeenCalled();
   await replace(view);
+  expect(() => validationContext.assertActive()).toThrow('canceled or replaced');
   expect(view.root.findByType('GenericRequestHome').props.deeplinkData).toBe(hex('replacement'));
   await act(async () => old[outcome](outcome === 'reject' ? new Error('Obsolete validation failed') : true));
   expect(mockValidate.mock.calls.map(([request]) => request.marker)).toEqual(['original', 'replacement']);

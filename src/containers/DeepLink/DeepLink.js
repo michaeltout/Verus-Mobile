@@ -1,6 +1,8 @@
 import { CommonActions } from '@react-navigation/native';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { View } from 'react-native';
+import {Text} from 'react-native-paper';
+import Button from '../../components/Button';
 import { useDispatch, useSelector } from 'react-redux';
 import AnimatedActivityIndicatorBox from '../../components/AnimatedActivityIndicatorBox';
 import Styles from '../../styles/index';
@@ -19,7 +21,7 @@ import { GENERIC_REQUEST, LOGIN_CONSENT_INFO, VERUSPAY_INVOICE_INFO } from '../.
 import LoginRequestInfo from './LoginRequestInfo/LoginRequestInfo';
 import { getCurrency, getIdentity } from '../../utils/api/channels/verusid/callCreators';
 import { convertFqnToDisplayFormat } from '../../utils/fullyqualifiedname';
-import { resetDeeplinkData } from '../../actions/actionCreators';
+import { resetDeeplinkData, setDeeplinkData } from '../../actions/actionCreators';
 
 const authorizedPermissions = [primitives.IDENTITY_VIEW.vdxfid,/*TODO: primitives.IDENTITY_AGREEMENT.vdxfid, primitives.ATTESTATION_READ_REQUEST.vdxfid */]
 import { CoinDirectory } from '../../utils/CoinData/CoinDirectory';
@@ -41,6 +43,13 @@ import {
   VERUSPAY_BURN_OWN_ADDRESS_DISPLAY,
 } from '../../utils/deeplink/verusPayBurnChangePrice';
 import {assertRequestNetworkMatchesAccount} from '../../utils/deeplink/requestAccounts';
+import {getPendingDeeplinkRequest, savePendingDeeplinkRequest} from '../../utils/deeplink/pendingDeeplinkStorage';
+import {hasAuthorizationDetails, readAuthorizationTransport} from '../../utils/deeplink/privateRequestTransport';
+import {createAuthorizationJob, findAuthorizationJob} from '../../utils/appAuthorization/jobs';
+import {findPreparedDelegatedResponse} from '../../utils/appAuthorization/delegatedOperations';
+import {getAppEncryptionSessionKey} from '../../utils/deeplink/appEncryptionSession';
+
+const APP_AUTHORIZATION_SETUP = 'APP_AUTHORIZATION_SETUP';
 
 const DeepLink = (props) => {
   const deeplinkId = useSelector((state) => state.deeplink.id)
@@ -110,22 +119,62 @@ const DeepLink = (props) => {
   }
 
   const processGenericRequest = async (operation) => {
+    let requestHex = readAuthorizationTransport(deeplinkData);
+    let pendingId = deeplinkData?.authorizationPendingId;
+
+    if (pendingId) {
+      const saved = await getPendingDeeplinkRequest(pendingId);
+      operation.assertActive();
+      if (!saved) throw new Error('The saved authorization request was not found.');
+      requestHex = saved.requestBufferString;
+    }
+
     const request = new primitives.GenericRequest();
-    request.fromBuffer(Buffer.from(deeplinkData, 'hex'));
+    request.fromBuffer(Buffer.from(requestHex, 'hex'));
+    const isAuthorization = hasAuthorizationDetails(request);
+
+    assertExperimentalGenericRequestAllowed(request, store.getState());
+
+    if (isAuthorization && !pendingId) {
+      const saved = await savePendingDeeplinkRequest({requestBufferString: requestHex});
+      operation.assertActive();
+      if (!saved) throw new Error('Unable to securely save this authorization request.');
+      pendingId = saved.id;
+    }
 
     if (signedIn) {
       assertRequestNetworkMatchesAccount(activeAccount, request.isTestnet());
     }
 
-    // An explicit app scope always requires proof of control by the active profile.
+    // Bootstrap authorization verifies the delegate before choosing a user ID.
+    // In particular, a nested gift may provide the user's first identity.
+    if (isAuthorization && signedIn) {
+      const existing = await findAuthorizationJob(request, {assertActive: operation.assertActive});
+      operation.assertActive();
+
+      if (existing) {
+        props.navigation.replace('AppAuthorizationRequestInfo', {jobId: existing.id});
+        return;
+      }
+
+      await validateGenericRequest(request, {assertActive: operation.assertActive});
+      operation.assertActive();
+      const job = await createAuthorizationJob(request, {
+        assertActive: operation.assertActive,
+        pendingDeeplinkId: pendingId,
+      });
+      operation.assertActive();
+      props.navigation.replace('AppAuthorizationRequestInfo', {jobId: job.id});
+      return;
+    }
+
+    // Other explicit app scopes require an active wallet profile.
     const requiresAppScopeCheck = request.isSigned() && request.hasAppOrDelegatorID();
     const requiresUploadSession = request.details.some(detail =>
       detail.getIAddressKey() === primitives.IDENTITY_UPDATE_REQUEST_VDXF_KEY.vdxfid &&
       detail.data.signDataMap?.size > 0,
     );
     
-    assertExperimentalGenericRequestAllowed(request, store.getState());
-
     if ((requiresAppScopeCheck || requiresUploadSession) && !signedIn) {
       authSource.current = source;
       setWaitingForSignin(true);
@@ -147,6 +196,17 @@ const DeepLink = (props) => {
         return;
       }
 
+      if (isAuthorization) {
+        await validateGenericRequest(request, {assertActive: operation.assertActive});
+        operation.assertActive();
+        setWaitingForSignin(false);
+        showScreen(operation, APP_AUTHORIZATION_SETUP, {
+          pendingId,
+          testnet: request.isTestnet(),
+        });
+        return;
+      }
+
       createAlert(
         "Cannot continue",
         `No ${request.isTestnet() ? 'testnet' : 'mainnet'} profiles found, cannot continue this request.`,
@@ -155,10 +215,35 @@ const DeepLink = (props) => {
       return;
     }
 
-    await validateGenericRequest(request);
+    if (signedIn && requiresAppScopeCheck && !isAuthorization) {
+      const sessionKey = getAppEncryptionSessionKey(store.getState());
+      const assertResumeCurrent = () => {
+        operation.assertActive();
+        if (sessionKey !== getAppEncryptionSessionKey(store.getState())) {
+          throw Object.assign(new Error('The wallet changed while restoring this response.'), {code: 'SESSION_CHANGED'});
+        }
+        assertExperimentalGenericRequestAllowed(request, store.getState());
+      };
+      const prepared = await findPreparedDelegatedResponse(request, {assertActive: assertResumeCurrent});
+      assertResumeCurrent();
+
+      if (prepared) {
+        // A completed logical operation resumes delivery with its recorded user
+        // and exact signed bytes. It never revisits detail handlers or execution
+        // approval, even when its original request has since expired.
+        props.navigation.navigate('GenericRequestComplete', {
+          requestBufferString: requestHex,
+          responseBufferString: prepared.response.toBuffer().toString('hex'),
+          appEncryptionSessionKey: sessionKey,
+        });
+        return;
+      }
+    }
+
+    await validateGenericRequest(request, {assertActive: operation.assertActive});
 
     showScreen(operation, GENERIC_REQUEST, {
-      deeplinkData
+      deeplinkData: requestHex,
     })
   }
 
@@ -401,8 +486,10 @@ const DeepLink = (props) => {
           break;
       }
     } catch (e) {
-      if (!operation.isActive()) return;
-      console.error(e)
+      if (!operation.isActive() || e.code === 'SESSION_CHANGED') return;
+      if (!deeplinkData?.authorizationPendingId && !deeplinkData?.privateAuthorizationRequest) {
+        console.error(e);
+      }
 
       createAlert('Error', e.message);
       cancel();
@@ -474,6 +561,26 @@ const DeepLink = (props) => {
   ]);
 
   const screens = {
+    [APP_AUTHORIZATION_SETUP]: () => (
+      <View style={{padding: 24, flex: 1, justifyContent: 'center'}}>
+        <Text style={{fontSize: 24, marginBottom: 16}}>Set up your wallet</Text>
+        <Text style={{marginBottom: 24}}>
+          Your authorization request is saved securely. Create or import a {displayProps.testnet ? 'testnet' : 'mainnet'} profile to continue.
+          Your permanent wallet keys are independent of the app's gift.
+        </Text>
+        <Button mode="contained" onPress={() => {
+          dispatch(setDeeplinkData(
+            primitives.GENERIC_REQUEST_DEEPLINK_VDXF_KEY.vdxfid,
+            {authorizationPendingId: displayProps.pendingId},
+            null,
+            {resumeAuthorizationAfterSetup: true, authorizationTestnet: displayProps.testnet},
+          ));
+          props.navigation.navigate(accounts.length === 0 ? 'SignedOutNoKeyStack' : 'SignedOutStack', {
+            screen: 'CreateProfile',
+          });
+        }}>Create or import profile</Button>
+      </View>
+    ),
     [LOGIN_CONSENT_INFO]: () => (
       <LoginRequestInfo
         {...displayProps}

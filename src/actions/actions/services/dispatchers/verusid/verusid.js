@@ -59,19 +59,113 @@ const getOriginatingAccountHash = requestContext => {
   return {accountHash, context};
 };
 
-// Every writer of this encrypted record updates the latest data inside the
-// storage queue. Snapshot replacements can erase a concurrently saved reservation.
+// These transformations also let authorization save confirmed identity links
+// with its job in one write. Always apply them to the latest queued document.
+export const withLinkedVerusId = (
+  current,
+  iAddress,
+  fqn,
+  chain,
+  {reclaimStorage = false} = {},
+) => {
+  const storage = current.storage_ids?.[chain]?.[iAddress];
+  if (storage && !reclaimStorage) return current;
+  const name = convertFqnToDisplayFormat(fqn);
+  if (!storage && current.linked_ids?.[chain]?.[iAddress] === name)
+    return current;
+
+  const updated = {
+    ...current,
+    linked_ids: {
+      ...(current.linked_ids || {}),
+      [chain]: {...(current.linked_ids?.[chain] || {}), [iAddress]: name},
+    },
+  };
+
+  // Only confirmed removal of every app signing key may reclaim storage.
+  // Ordinary linking must continue to respect its Connected Apps classification.
+  if (storage) {
+    const remaining = {...current.storage_ids[chain]};
+    delete remaining[iAddress];
+    updated.storage_ids = {...current.storage_ids, [chain]: remaining};
+  }
+  return updated;
+};
+
+export const withStorageVerusId = (
+  current,
+  iAddress,
+  fqn,
+  chain,
+  userIdentityID,
+) => {
+  if (!userIdentityID)
+    throw new Error('Storage needs an authorizing user identity.');
+
+  const previous = current.storage_ids?.[chain]?.[iAddress];
+  const name = convertFqnToDisplayFormat(fqn || iAddress);
+  if (
+    current.linked_ids?.[chain]?.[iAddress] === undefined &&
+    previous?.name === name &&
+    previous.userIdentityIDs?.includes(userIdentityID)
+  ) {
+    return current;
+  }
+
+  const linked = {...(current.linked_ids?.[chain] || {})};
+  delete linked[iAddress];
+
+  return {
+    ...current,
+    linked_ids: {...(current.linked_ids || {}), [chain]: linked},
+    storage_ids: {
+      ...(current.storage_ids || {}),
+      [chain]: {
+        ...(current.storage_ids?.[chain] || {}),
+        [iAddress]: {
+          name,
+          userIdentityIDs: [
+            ...new Set([...(previous?.userIdentityIDs || []), userIdentityID]),
+          ],
+        },
+      },
+    },
+  };
+};
+
+// Every writer updates the latest data inside the storage queue. A link must
+// never undo a concurrent classification as shared storage.
 export const linkVerusId = async (iAddress, fqn, chain, requestContext) => {
+  const {accountHash, context} = getOriginatingAccountHash(requestContext);
+  let linked = false;
+
+  await modifyServiceStoredDataForUser(
+    current => {
+      linked = !current.storage_ids?.[chain]?.[iAddress];
+      return withLinkedVerusId(current, iAddress, fqn, chain);
+    },
+    VERUSID_SERVICE_ID,
+    accountHash,
+    context,
+  );
+  return linked;
+};
+
+/** Classify confirmed app storage and unlink it in the same encrypted write. */
+export const markVerusIdAsStorage = async (
+  iAddress,
+  fqn,
+  chain,
+  userIdentityID,
+  requestContext,
+) => {
   const {accountHash, context} = getOriginatingAccountHash(requestContext);
 
   return modifyServiceStoredDataForUser(
-    current => ({
-      ...current,
-      linked_ids: {
-        ...(current.linked_ids || {}),
-        [chain]: {...(current.linked_ids?.[chain] || {}), [iAddress]: convertFqnToDisplayFormat(fqn)},
-      },
-    }),
+    current => {
+      context.assertActive?.();
+      return withStorageVerusId(current, iAddress, fqn, chain, userIdentityID);
+    },
     VERUSID_SERVICE_ID,
     accountHash,
     context,

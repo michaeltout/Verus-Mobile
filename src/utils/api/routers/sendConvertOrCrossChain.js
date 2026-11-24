@@ -7,14 +7,14 @@ import * as erc20 from "../channels/erc20/callCreator";
 import * as vrpc from "../channels/vrpc/callCreators";
 
 const SEND_FUNCTION_MAP = {
-  [ETH]: (coinObj, channelId, activeUser, { approvalparams, transferparams, gasprice }) => {
-    return erc20.sendBridgeTransfer(coinObj, transferparams, approvalparams, gasprice);
+  [ETH]: (coinObj, channelId, activeUser, { approvalparams, transferparams, gasprice, beforeSend }) => {
+    return erc20.sendBridgeTransfer(coinObj, transferparams, approvalparams, gasprice, beforeSend);
   },
-  [ERC20]: (coinObj, channelId, activeUser, { approvalparams, transferparams, gasprice }) => {
-    return erc20.sendBridgeTransfer(coinObj, transferparams, approvalparams, gasprice);
+  [ERC20]: (coinObj, channelId, activeUser, { approvalparams, transferparams, gasprice, beforeSend }) => {
+    return erc20.sendBridgeTransfer(coinObj, transferparams, approvalparams, gasprice, beforeSend);
   },
-  [VRPC]: (coinObj, channelId, activeUser, { hex, inputs }) => {
-    return vrpc.sendCurrencyTransfer(coinObj, channelId, hex, inputs);
+  [VRPC]: (coinObj, channelId, activeUser, { hex, inputs, beforeSend }) => {
+    return vrpc.sendCurrencyTransfer(coinObj, channelId, hex, inputs, beforeSend);
   }
 };
 

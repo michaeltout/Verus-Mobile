@@ -57,7 +57,7 @@ const paymentSourceLabel = review => review.fundingAddress === review.signingAdd
   : identityLabel(review.fundingAddress, {...review.identityNames,
     ...(review.fundingName ? {[review.fundingAddress]: review.fundingName} : {})});
 
-export const RegistrationPage = ({children, error, refreshing = false, onRefresh, footer}) => {
+export const RegistrationPage = ({children, error, refreshing = false, onRefresh, refreshLabel = 'Refresh costs', footer}) => {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const scrollView = useRef(null);
@@ -73,7 +73,7 @@ export const RegistrationPage = ({children, error, refreshing = false, onRefresh
         alwaysBounceVertical={!!onRefresh}
         refreshControl={onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={() => onRefresh(true)}
           tintColor={Colors.primaryColor} colors={[Colors.primaryColor]} /> : undefined}
-        accessibilityActions={onRefresh ? [{name: 'refresh', label: 'Refresh costs'}] : undefined}
+        accessibilityActions={onRefresh ? [{name: 'refresh', label: refreshLabel}] : undefined}
         onAccessibilityAction={onRefresh ? event => { if (event.nativeEvent.actionName === 'refresh') onRefresh(); } : undefined}
         contentContainerStyle={[styles.content, {paddingBottom: footer ? 16 : Math.max(insets.bottom, 16) + 16}]}>
         {!!error && <View style={[styles.notice, styles.error]} accessibilityRole="alert" accessibilityLiveRegion="assertive">

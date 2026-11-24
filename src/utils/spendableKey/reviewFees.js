@@ -50,6 +50,7 @@ export const verifiedClaimFees = transactions => {
 export const confirmVerifiedClaimFees = (
   preflightPlan,
   currencyName = currency => currency,
+  {title = 'Confirm claim fees', actionLabel = 'Claim', description: feeDescription} = {},
 ) => {
   const fees = verifiedClaimFees(preflightPlan.transactions);
   const description =
@@ -58,11 +59,13 @@ export const confirmVerifiedClaimFees = (
 
   return new Promise(resolve =>
     Alert.alert(
-      'Confirm claim fees',
-      `Network fees will be deducted from the claim:\n\n${description}\n\nContinue with this claim?`,
+      title,
+      feeDescription
+        ? `${feeDescription}\n\n${description}`
+        : `Network fees will be deducted from the claim:\n\n${description}\n\nContinue with this claim?`,
       [
         {text: 'Cancel', style: 'cancel', onPress: () => resolve(false)},
-        {text: 'Claim', onPress: () => resolve(true)},
+        {text: actionLabel, onPress: () => resolve(true)},
       ],
       {cancelable: true, onDismiss: () => resolve(false)},
     ),

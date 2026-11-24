@@ -1,5 +1,6 @@
 import {MIN_IDENTITY_UPDATE_EXPIRY_DELTA} from 'verusid-ts-client';
 import { GenericRequest, IdentityUpdateRequestOrdinalVDXFObject } from "verus-typescript-primitives";
+import {assertNoAppAuthorizationCredentials} from '../../appAuthorization/requestPolicy';
 
 export const assertIdentityUpdateRequestConstraints = (details, {
   systemId, isTestnet, height, chainId,
@@ -34,4 +35,6 @@ export const validateIdentityUpdateRequestVDXFObject = (request, detailIndex) =>
   if (detailsObject.data == null || detailsObject.data.identity == null) {
     throw new Error("Invalid identity update request details.");
   }
+
+  assertNoAppAuthorizationCredentials(detailsObject.data);
 }

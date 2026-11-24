@@ -6,8 +6,8 @@ const { test } = require('node:test');
 const { updateVerusLibs } = require('./update-verus-libs.cjs');
 
 const libraries = [
-  ['verus-typescript-primitives', 'VerusCoin/verus-typescript-primitives', 'master'],
-  ['verusid-ts-client', 'VerusCoin/verusid-ts-client', 'master'],
+  ['verus-typescript-primitives', 'michaeltout/verus-typescript-primitives', 'app-authorization-request'],
+  ['verusid-ts-client', 'michaeltout/verusid-ts-client', 'app-authorization-request'],
   ['verusd-rpc-ts-client', 'VerusCoin/verusd-rpc-ts-client', 'main'],
   ['@bitgo/utxo-lib', 'VerusCoin/BitGoJS', 'utxo-lib-verus'],
 ];

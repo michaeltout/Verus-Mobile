@@ -29,6 +29,7 @@ const {
   GetBlockRequest,
   GetCurrencyRequest,
   GetIdentityRequest,
+  GetIdentityContentRequest,
   GetInfoRequest,
   GetRawTransactionRequest,
   GetTxOutRequest,
@@ -263,4 +264,107 @@ describe('registration SDK transport integration', () => {
     expect(results[1].error.code).toBe(-32601);
     expect(commands().map(item => item.method)).toEqual(['gettxout']);
   });
+
+  it('shares authorization content reads through the real SDK hook and bypasses all mutable TTL entries', async () => {
+    const {createAuthorizationReadScope} = require('verusid-ts-client');
+    const identityName = 'user@';
+    const contentArgs = [identityName, 0, 123, false, 0, 'credential-key'];
+    const identityRequest = new GetIdentityRequest(chain, identityName);
+    const contentRequest = new GetIdentityContentRequest(chain, ...contentArgs);
+    const blockRequest = new GetBlockRequest(chain, '123', 1);
+    const revision = {
+      txid: 'aa'.repeat(32), vout: 0, blockheight: 120, status: 'active',
+      identity: {identityaddress: identityName, primaryaddresses: ['user-key']},
+    };
+    let encryptedCredential = 'current credential';
+    const envelopeFor = body => ({
+      error: null,
+      result: body.method === 'getinfo'
+        ? {chainid: chain, blocks: 123, longestchain: 123}
+        : body.method === 'getblock'
+          ? {hash: 'bb'.repeat(32), height: 123, confirmations: 1}
+          : body.method === 'getidentitycontent'
+            ? {...revision, fromheight: 0, toheight: 123,
+              identity: {...revision.identity, contentmultimap: {'credential-key': [encryptedCredential]}}}
+            : {...revision, identity: {...revision.identity}},
+    });
+    mockHttpPost.mockImplementation((url, body) => Promise.resolve({
+      status: 200,
+      data: Array.isArray(body) ? body.map(envelopeFor) : envelopeFor(body),
+    }));
+    [info(), identityRequest, contentRequest, blockRequest].forEach(request =>
+      seedCache(request, {result: {stale: true}, error: null}),
+    );
+
+    const readPhase = async expectedCredential => {
+      const scope = createAuthorizationReadScope(registrationRpc);
+      const reads = Promise.all([
+        scope.rpc.getIdentityContent(...contentArgs),
+        scope.rpc.getIdentityContent(...contentArgs),
+        scope.rpc.getIdentity(identityName),
+        scope.rpc.getInfo(),
+        scope.rpc.getBlock('123', 1),
+      ]);
+      await jest.advanceTimersByTimeAsync(100);
+      const [content, sharedContent] = await reads;
+      expect(content.error).toBeNull();
+      expect(content.result.identity.contentmultimap['credential-key']).toEqual([expectedCredential]);
+      expect(sharedContent).toEqual(content);
+
+      const validation = scope.assertCurrent();
+      await jest.advanceTimersByTimeAsync(100);
+      await validation;
+    };
+
+    await readPhase(encryptedCredential);
+    expect(bodies()).toHaveLength(2);
+    expect(bodies()[0].map(item => [item.method, item.params])).toEqual([
+      ['getidentitycontent', contentRequest.getParams()],
+      ['getidentity', identityRequest.getParams()],
+      ['getinfo', []],
+      ['getblock', blockRequest.getParams()],
+    ]);
+    expect(bodies()[1].map(item => item.method)).toEqual(['getidentity', 'getinfo', 'getblock']);
+
+    // A second operation starts within the ordinary cache TTL. Its new CMM and
+    // identity revision must come from the server rather than the previous scope.
+    encryptedCredential = 'replacement credential';
+    revision.txid = 'cc'.repeat(32);
+    await readPhase(encryptedCredential);
+    expect(bodies()).toHaveLength(4);
+    expect(commands()).toHaveLength(14);
+    expect(commands().filter(item => item.method === 'getidentitycontent')).toHaveLength(2);
+    expect(mockGetCachedResponse).not.toHaveBeenCalled();
+    expect(mockSetCachedResponse).not.toHaveBeenCalled();
+  });
+
+  it('rejects an authorization identity update observed by the real transport final check', async () => {
+    const {createAuthorizationReadScope} = require('verusid-ts-client');
+    const identityRequest = new GetIdentityRequest(chain, 'user@');
+    let txid = 'aa'.repeat(32);
+    const envelopeFor = body => ({
+      error: null,
+      result: body.method === 'getinfo'
+        ? {chainid: chain, blocks: 123, longestchain: 123}
+        : {txid, vout: 0, blockheight: 120, status: 'active', identity: {primaryaddresses: ['user-key']}},
+    });
+    mockHttpPost.mockImplementation((url, body) => Promise.resolve({
+      status: 200,
+      data: Array.isArray(body) ? body.map(envelopeFor) : envelopeFor(body),
+    }));
+    seedCache(identityRequest, {result: {stale: true}, error: null});
+    const scope = createAuthorizationReadScope(registrationRpc);
+    const identity = scope.rpc.getIdentity('user@');
+    await jest.advanceTimersByTimeAsync(100);
+    expect((await identity).result.txid).toBe(txid);
+
+    txid = 'cc'.repeat(32);
+    const validation = expect(scope.assertCurrent()).rejects.toThrow(/Authorization state changed/);
+    await jest.advanceTimersByTimeAsync(100);
+    await validation;
+    expect(commands().map(item => item.method)).toEqual(['getidentity', 'getidentity', 'getinfo']);
+    expect(mockGetCachedResponse).not.toHaveBeenCalled();
+    expect(mockSetCachedResponse).not.toHaveBeenCalled();
+  });
+
 });

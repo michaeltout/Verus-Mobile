@@ -19,6 +19,7 @@ import {SEND_MODAL_IDENTITY_TO_LINK_FIELD} from '../../../utils/constants/sendMo
 import {dispatchRemoveNotification, dispatchClearAccountNotifications} from '../../../actions/actions/notifications/dispatchers/notifications';
 import {useObjectSelector} from '../../../hooks/useObjectSelector';
 import {registrationNotifications} from '../../../utils/identityRegistration/notifications';
+import {authorizationNotifications} from '../../../utils/appAuthorization/notifications';
 
 const getIcon = (type, index) => {
   const props = {index, width: 22, height: 22};
@@ -58,20 +59,22 @@ const NotificationTitle = ({title}) => (
   </Text>
 );
 
-const RegistrationNotice = ({notification, onPress}) => (
+// Registration and authorization share the same durable Activity row. The
+// entire row is one accessible action, including its title and current status.
+const ActivityNotice = ({notification, onPress}) => (
   <TouchableOpacity
     style={styles.registration}
     onPress={onPress}
     activeOpacity={0.65}
     accessibilityRole="button"
-    accessibilityLabel={`${notification.identityName}. ${notification.statusText}. ${notification.body}`}
-    accessibilityHint="Opens this identity registration"
-    testID={`registration-notice-${notification.jobId}`}>
+    accessibilityLabel={`${notification.identityName || notification.title[0]}. ${notification.statusText}. ${notification.body}`}
+    accessibilityHint={notification.accessibilityHint || 'Opens this identity registration'}
+    testID={`${notification.kind === 'app-authorization' ? 'authorization' : 'registration'}-notice-${notification.jobId}`}>
     <View style={styles.registrationIcon} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
       {notification.icon}
     </View>
     <View style={styles.registrationContent}>
-      <Text style={styles.registrationName} numberOfLines={2}>{notification.identityName}</Text>
+      <Text style={styles.registrationName}>{notification.identityName || notification.title[0]}</Text>
       <Text style={styles.status}>{notification.statusText}</Text>
       <Text style={styles.registrationAction}>{notification.body} ›</Text>
     </View>
@@ -111,9 +114,14 @@ const NotificationWidget = props => {
   const [collapsed, setCollapsed] = useState(false);
   const notifications = useObjectSelector(state => state.notifications);
   const registrationJobs = useObjectSelector(state => state.channelStore_verusid.registrationJobs || {});
+  const authorizationJobs = useObjectSelector(state => state.channelStore_verusid.authorizationJobs || {});
   const accountHash = useSelector(state => state.authentication.activeAccount?.accountHash);
   const ordinaryNotifications = getNotifications(notifications, accountHash);
   const trayNotifications = [
+    ...authorizationNotifications(authorizationJobs, accountHash).map(notification => ({
+      ...notification,
+      icon: getIcon(NOTIFICATION_ICON_VERUSID, notification.uid),
+    })),
     ...registrationNotifications(registrationJobs, accountHash).map(notification => ({
       ...notification,
       icon: getIcon(NOTIFICATION_ICON_VERUSID, notification.uid),
@@ -158,8 +166,9 @@ const NotificationWidget = props => {
             </TouchableOpacity>
           )}
         </View>
-        {!collapsed && trayNotifications.map(notification => notification.kind === 'identity-registration' ? (
-          <RegistrationNotice
+        {!collapsed && trayNotifications.map(notification =>
+          ['identity-registration', 'app-authorization'].includes(notification.kind) ? (
+          <ActivityNotice
             key={notification.uid}
             notification={notification}
             onPress={() => notification.onAction(props)}

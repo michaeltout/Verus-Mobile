@@ -3,7 +3,7 @@ import {vrpcErrorResponse} from './vrpcRequestMany';
 
 const BATCH_COMMANDS = new Set(['getaddressbalance', 'getaddressdeltas', 'getaddressmempool']);
 const REFRESH_COMMANDS = new Set([...BATCH_COMMANDS, 'getinfo']);
-// Registration supplies these read groups explicitly. They never enter the
+// Registration and authorization supply these read groups explicitly. They never enter the
 // collection window used by ordinary wallet refresh requests.
 const EXPLICIT_COMMANDS = new Set([
   ...REFRESH_COMMANDS,
@@ -12,6 +12,7 @@ const EXPLICIT_COMMANDS = new Set([
   'getrawtransaction',
   'gettxout',
   'getidentity',
+  'getidentitycontent',
 ]);
 const MAX_BATCH_SIZE = 20;
 const BATCH_ITEMS_PER_SECOND = 80;

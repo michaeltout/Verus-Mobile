@@ -1,6 +1,7 @@
 import store from "../../../../store";
 import {
   deleteServiceStoredDataForUser,
+  loadServiceStoredData,
   loadServiceStoredDataForUser,
   storeServiceStoredDataForUser,
 } from "../../../../utils/asyncStore/serviceStoredDataStorage";
@@ -57,12 +58,14 @@ export const saveEncryptedServiceStoredDataForUser = async (
   encryptedData = {},
   accountHash,
   requestContext,
+  allStoredData,
 ) => {
   const sessionScope = getOriginatingSessionScope(accountHash, requestContext);
   assertOriginatingSessionCurrent(sessionScope, requestContext);
   const serviceStoredData = await storeServiceStoredDataForUser(
     encryptedData,
-    accountHash
+    accountHash,
+    allStoredData,
   );
   assertOriginatingSessionCurrent(sessionScope, requestContext);
   store.dispatch(scopeSessionAction(setServiceStored(encryptedData), sessionScope));
@@ -102,11 +105,12 @@ export const modifyServiceStoredDataForUser = async (
 
   return queueServiceStorageWrite(async () => {
     assertOriginatingSessionCurrent(sessionScope, scopedRequestContext);
-    const serviceStoredData = {
-      ...(await loadServiceStoredDataForUser(accountHash)),
-    };
+    // The queue protects this snapshot until the write completes. Reusing it
+    // avoids decrypting every profile's service data again just to save one.
+    const allStoredData = await loadServiceStoredData();
+    const serviceStoredData = {...allStoredData[accountHash]};
     assertOriginatingSessionCurrent(sessionScope, scopedRequestContext);
-    const password = await requestPassword();
+    const password = await requestPassword(scopedRequestContext);
     assertOriginatingSessionCurrent(sessionScope, scopedRequestContext);
     const currentData = decryptServiceData(
       serviceStoredData[service],
@@ -117,6 +121,10 @@ export const modifyServiceStoredDataForUser = async (
       typeof data === "function" ? await data(currentData) : data;
     assertOriginatingSessionCurrent(sessionScope, scopedRequestContext);
 
+    // Functional updates can explicitly keep the existing value. Polling an
+    // unchanged job must not encrypt, persist, or publish the same data again.
+    if (nextData === currentData) return nextData;
+
     serviceStoredData[service] = await encryptkey(
       password,
       JSON.stringify(nextData)
@@ -126,6 +134,7 @@ export const modifyServiceStoredDataForUser = async (
       serviceStoredData,
       accountHash,
       scopedRequestContext,
+      allStoredData,
     );
     assertOriginatingSessionCurrent(sessionScope, scopedRequestContext);
 

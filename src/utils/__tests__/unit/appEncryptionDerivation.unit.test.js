@@ -1,4 +1,5 @@
 import {BN} from 'bn.js';
+import {createAppAuthorizationRequest} from 'verusid-ts-client';
 import {
   AppEncryptionRequestDetails,
   AppEncryptionRequestOrdinalVDXFObject,
@@ -14,14 +15,31 @@ import {
 import {SaplingExtendedSpendingKey} from 'verus-typescript-primitives/dist/pbaas/SaplingExtendedSpendingKey';
 import {SaplingExtendedViewingKey} from 'verus-typescript-primitives/dist/pbaas/SaplingExtendedViewingKey';
 import {processAppEncryptionRequest, handleAppEncryptionRequestVDXFObject} from '../../deeplink/handlers/appEncryptionRequestHandler';
-import {getRequestScope} from '../../deeplink/handlers/requestDisplayUtils';
+import {getRequestScope, getSignedRequestDisplayProps} from '../../deeplink/handlers/requestDisplayUtils';
+import {getIdentity} from '../../api/channels/verusid/callCreators';
 import {getKeyMaterial} from '../../crypto/getKeyMaterial';
 import {zGetEncryptionAddress} from '../../api/channels/dlight/requests/zGetEncryptionAddress';
 import {assertAppEncryptionAuthorization} from '../../deeplink/validator/appEncryptionAuthorization';
 import {encryptDataBufferToDescriptor} from '../../crypto/encryptDataDescriptor';
+import {reserveDelegatedExecution} from '../../appAuthorization/delegatedOperations';
 
 let mockState;
+let mockServiceData;
+let mockServiceQueue;
 jest.mock('../../../store', () => ({getState: () => mockState}));
+jest.mock('../../auth/authBox', () => ({
+  requestServiceStoredData: async () => mockServiceData,
+}));
+jest.mock('../../../actions/actions/services/dispatchers/services', () => ({
+  modifyServiceStoredDataForUser: update => {
+    const task = mockServiceQueue.then(() => {
+      mockServiceData = JSON.parse(JSON.stringify(update(mockServiceData)));
+      return mockServiceData;
+    });
+    mockServiceQueue = task.catch(() => {});
+    return task;
+  },
+}));
 jest.mock('../../vrpc/vrpcInterface', () => ({initEndpoint: jest.fn()}));
 jest.mock('../../crypto/getKeyMaterial', () => ({
   ...jest.requireActual('../../crypto/getKeyMaterial'),
@@ -75,6 +93,8 @@ const decodedResponse = () => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockServiceData = {};
+  mockServiceQueue = Promise.resolve();
   mockState = {authentication: {activeAccount: {accountHash: 'profile'}, sessionEpoch: 1, signedIn: true}};
   getKeyMaterial.mockResolvedValue({extsk: walletKey});
   assertAppEncryptionAuthorization.mockImplementation(async request => ({
@@ -84,6 +104,7 @@ beforeEach(() => {
   encryptDataBufferToDescriptor.mockResolvedValue({
     encryptedDescriptor: new DataDescriptor({
       flags: DataDescriptor.FLAG_ENCRYPTED_DATA, objectdata: Buffer.from('encrypted'),
+      epk: Buffer.alloc(32, 1),
     }),
     encryptedDescriptorJson: {objectdata: 'encrypted'},
   });
@@ -204,6 +225,64 @@ test('authorization failures stop before shielded key access', async () => {
   expect(zGetEncryptionAddress).not.toHaveBeenCalled();
 });
 
+test('a delegated encryption result survives retry without another derivation', async () => {
+  const request = makeRequest({}, scope);
+  assertAppEncryptionAuthorization.mockImplementation(async current => ({
+    coinObj: {id: 'VRSC', system_id: 'system'},
+    appScopeID: getRequestScope(current),
+    delegated: true,
+  }));
+  const first = await process(request);
+  jest.clearAllMocks();
+  const retried = await process(request);
+  expect(retried.responseDetail.toBuffer()).toEqual(first.responseDetail.toBuffer());
+  expect(assertAppEncryptionAuthorization).toHaveBeenCalledTimes(2);
+  expect(getKeyMaterial).not.toHaveBeenCalled();
+  expect(zGetEncryptionAddress).not.toHaveBeenCalled();
+  expect(encryptDataBufferToDescriptor).not.toHaveBeenCalled();
+
+  // A saved local result is not permission to bypass a revoked/expired grant.
+  assertAppEncryptionAuthorization.mockRejectedValueOnce(new Error('Approval removed'));
+  await expect(process(request)).rejects.toThrow('Approval removed');
+});
+
+test('a consumed encryption step without ciphertext cannot derive a replacement', async () => {
+  const request = makeRequest({}, scope);
+  assertAppEncryptionAuthorization.mockResolvedValue({
+    coinObj: {id: 'VRSC', system_id: 'system'},
+    appScopeID: scope.toIAddress(),
+    delegated: true,
+  });
+  await reserveDelegatedExecution(
+    request,
+    {identityID: user, systemID: 'selected-system'},
+    'app-encryption:0',
+  );
+
+  await expect(process(request)).rejects.toThrow('Invalid saved encryption response');
+  expect(getKeyMaterial).not.toHaveBeenCalled();
+  expect(zGetEncryptionAddress).not.toHaveBeenCalled();
+  expect(encryptDataBufferToDescriptor).not.toHaveBeenCalled();
+});
+
+test.each([false, true])('authorization lost during encrypted storage access prevents result release (cached = %s)', async cached => {
+  const request = makeRequest({}, scope);
+  const allowed = {
+    coinObj: {id: 'VRSC', system_id: 'system'},
+    appScopeID: scope.toIAddress(),
+    delegated: true,
+  };
+  assertAppEncryptionAuthorization.mockResolvedValue(allowed);
+  if (cached) await process(request);
+  jest.clearAllMocks();
+  assertAppEncryptionAuthorization
+    .mockResolvedValueOnce(allowed)
+    .mockRejectedValueOnce(new Error('Approval expired during unlock'));
+  await expect(process(request)).rejects.toThrow('Approval expired during unlock');
+  expect(assertAppEncryptionAuthorization).toHaveBeenCalledTimes(2);
+  expect(zGetEncryptionAddress).toHaveBeenCalledTimes(cached ? 0 : 1);
+});
+
 test('malformed explicit scope never falls back to the signer', async () => {
   const request = makeRequest({}, compact('malformed'));
   request.appOrDelegatorID.toIAddress = () => {throw new Error('Malformed scope');};
@@ -255,4 +334,43 @@ test('display keeps raw app and nested IDs when name lookups fail', async () => 
     derivationIdentityID: nested.toIAddress(), derivationIdFqn: nested.toIAddress(),
     derivationNumber: 7, secondaryDerivationNumber: 13,
   });
+});
+
+test.each([false, true])('reuses resolved attribution for the encryption scope without another identity lookup (explicit = %s)', async explicit => {
+  getSignedRequestDisplayProps.mockResolvedValueOnce({
+    signerSystemID: 'system', signerIdentityID: signer.toIAddress(), signerFqn: 'delegate@',
+    ...(explicit ? {appOrDelegatorID: scope.toIAddress(), appOrDelegatorFqn: 'app@'} : {}),
+  });
+  const {displayProps} = await handleAppEncryptionRequestVDXFObject(
+    makeRequest({requestID: undefined}, explicit ? scope : undefined), null, 0,
+  );
+  expect(displayProps.appScopeFqn).toBe(explicit ? 'app@' : 'delegate@');
+  expect(displayProps.signerIdentityID).toBe(signer.toIAddress());
+  expect(getIdentity).not.toHaveBeenCalled();
+});
+
+
+test('the generic encryption handler cannot bypass the combined authorization job', async () => {
+  const createdAt = Math.floor(Date.now() / 1000);
+  const request = createAppAuthorizationRequest({
+    appID: scope.toIAddress(),
+    delegate: {identityID: signer.toIAddress(), systemID: compact('VRSC').toIAddress()},
+    requestID: correlation.toIAddress(),
+    createdAt: new BN(createdAt), expiryTime: new BN(createdAt + 3600),
+    encryptResponseToAddress: recipient,
+    appEncryption: new AppEncryptionRequestDetails({
+      requestID: CompactIAddressObject.fromAddress(correlation.toIAddress()),
+      encryptResponseToAddress: recipient, derivationNumber: new BN(0),
+    }),
+  });
+  request.signature.signatureAsVch = Buffer.from('structural fixture');
+  await expect(processAppEncryptionRequest({
+    request, detailIndex: 2, responseSignerID: user,
+    responseSignerSystemID: compact('VRSC').toIAddress(), assertActive: () => {},
+  })).rejects.toThrow('through app authorization');
+  expect(assertAppEncryptionAuthorization).not.toHaveBeenCalled();
+  expect(getKeyMaterial).not.toHaveBeenCalled();
+  expect(zGetEncryptionAddress).not.toHaveBeenCalled();
+  expect(encryptDataBufferToDescriptor).not.toHaveBeenCalled();
+  expect(mockServiceData).toEqual({});
 });

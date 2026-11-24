@@ -1,7 +1,8 @@
 import {
   BigNumber,
   EHashTypes,
-} from "verus-typescript-primitives";
+  CompactIAddressObject,
+} from 'verus-typescript-primitives';
 
 export const prepareGenericResponseForSigning = ({
   request,
@@ -15,6 +16,11 @@ export const prepareGenericResponseForSigning = ({
   response.requestHashType = new BigNumber(EHashTypes.HASH_SHA256);
   response.createdAt = new BigNumber(createdAtSeconds);
   response.handledBy = handledBy;
+  if (request.hasAppOrDelegatorID()) {
+    response.appOrDelegatorID = CompactIAddressObject.fromAddress(
+      request.appOrDelegatorID.toIAddress(),
+    );
+  }
   response.setFlags();
   return response;
 };

@@ -16,6 +16,7 @@ import { decryptData } from "../../api/channels/dlight/requests/decrypt";
 import { zGetEncryptionAddress } from "../../api/channels/dlight/requests/zGetEncryptionAddress";
 import { getConditionID } from "../../crypto/encryptCredentials";
 import { getKeyMaterial } from "../../crypto/getKeyMaterial";
+import {assertNoAppAuthorizationCredentials} from '../../appAuthorization/requestPolicy';
 
 const asArray = value => {
   if (value == null) return [];
@@ -40,13 +41,17 @@ const scopeMatches = (credential, scope) => {
 
 const parseVdxfUniValue = buffer => {
   const value = new VdxfUniValue();
-  value.fromBuffer(buffer, 0);
+  if (value.fromBuffer(buffer, 0) !== buffer.length) {
+    throw new Error('Trailing encrypted credential data.');
+  }
   return value;
 };
 
 const parseFqnVdxfUniValue = buffer => {
   const value = new FqnVdxfUniValue();
-  value.fromBuffer(buffer, 0);
+  if (value.fromBuffer(buffer, 0) !== buffer.length) {
+    throw new Error('Trailing encrypted credential wrapper.');
+  }
   return value;
 };
 
@@ -151,6 +156,95 @@ const decryptCredentialDescriptor = async (descriptor, fallbackIvkHex) => {
     : Buffer.from(plaintext, "hex");
 
   return extractCredentialsFromPlaintext(plaintextBuffer);
+};
+
+/**
+ * Authorization reads must authenticate with this user's self channel. Public
+ * IVKs/SSKs supplied inside an untrusted wrapper cannot replace that key, and a
+ * failed/opaque entry cannot be skipped to produce an incomplete grant view.
+ */
+export const decryptAuthorizationCredentialValue = async (
+  storedBytes,
+  ivkHex,
+  assertActive,
+) => {
+  // Generic credentials currently use compact wrappers in the same self bucket.
+  // They remain readable, but authorization records must use the native format.
+  const nativeTypeKey = fromBase58Check(DataDescriptorKey.vdxfid).hash;
+  const native = storedBytes
+    .subarray(0, nativeTypeKey.length)
+    .equals(nativeTypeKey);
+  const wrapper = native
+    ? parseVdxfUniValue(storedBytes)
+    : parseFqnVdxfUniValue(storedBytes);
+  const entries = native
+    ? wrapper.values.flatMap(Object.entries)
+    : [...wrapper.entries()].map(([key, value]) => [key.toAddress(), value]);
+  const descriptor = entries[0]?.[1];
+
+  if (
+    entries.length !== 1 ||
+    entries[0][0] !== DataDescriptorKey.vdxfid ||
+    !(descriptor instanceof DataDescriptor) ||
+    !descriptor.hasEncryptedData() ||
+    descriptor.ivk?.length ||
+    descriptor.ssk?.length ||
+    descriptor.epk?.length !== 32 ||
+    descriptor.objectdata?.length <= 16 ||
+    !wrapper.toBuffer().equals(storedBytes)
+  ) {
+    throw new Error('Invalid self-encrypted authorization credential wrapper.');
+  }
+
+  assertActive();
+  const plaintext = await decryptData({
+    ivkHex,
+    ephemeralPublicKeyHex: descriptor.epk.toString('hex'),
+    ciphertextHex: descriptor.objectdata.toString('hex'),
+  });
+  assertActive();
+
+  if (typeof plaintext !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(plaintext)) {
+    throw new Error(
+      'Invalid authenticated authorization credential plaintext.',
+    );
+  }
+
+  const bytes = Buffer.from(plaintext, 'hex');
+  if (bytes.length + 16 !== descriptor.objectdata.length) {
+    throw new Error('Invalid authenticated authorization credential length.');
+  }
+
+  let decoded = parseVdxfUniValue(bytes);
+  if (
+    decoded.values.length !== 1 ||
+    Object.keys(decoded.values[0]).length !== 1
+  ) {
+    throw new Error(
+      'An encrypted credential must contain one complete record.',
+    );
+  }
+  const inner = decoded.values[0][DataDescriptorKey.vdxfid];
+  if (inner) {
+    if (!(inner instanceof DataDescriptor) || inner.hasEncryptedData()) {
+      throw new Error('Invalid inner credential descriptor.');
+    }
+    decoded = parseVdxfUniValue(inner.objectdata);
+  }
+  if (
+    decoded.values.length !== 1 ||
+    Object.keys(decoded.values[0]).length !== 1 ||
+    !(decoded.values[0][CredentialKey.vdxfid] instanceof Credential)
+  ) {
+    throw new Error(
+      'The encrypted credential could not be decoded completely.',
+    );
+  }
+  const credential = decoded.values[0][CredentialKey.vdxfid];
+  // Ordinary generic credentials may also use direct credential plaintext.
+  // Authorization writes always use a native wrapper and an inner descriptor.
+  if (!native || !inner) assertNoAppAuthorizationCredentials(credential);
+  return [credential];
 };
 
 export const getScopedCredentials = async ({

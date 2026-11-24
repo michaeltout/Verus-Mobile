@@ -66,3 +66,5 @@ export const SEND_MODAL_FORM_STEP_CONFIRM = "SEND_MODAL_FORM_STEP_CONFIRM"
 export const SEND_MODAL_FORM_STEP_RESULT = "SEND_MODAL_FORM_STEP_RESULT"
 
 export const CONVERT_OR_CROSS_CHAIN_SLIPPAGE_WARNING_THRESHOLD = 0.05
+// Optional request-specific verification immediately before a payment is sent.
+export const SEND_MODAL_BEFORE_SEND = 'send_modal_before_send';

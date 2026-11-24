@@ -204,6 +204,10 @@ beforeEach(() => {
       default: throw new Error(`Unexpected RPC ${request.method}`);
     }
   });
+  // The wallet endpoint batches fresh verification reads through this API.
+  mockClient.interface.requestMany = requests => Promise.all(
+    requests.map(request => mockClient.interface.request(request)),
+  );
   mockBuild.mockImplementation(args => args.currencyTransferOutputs
     ? mockClient.createUpdateIdentityWithCurrencyTransferTransaction(args.identity, args.changeAaddr, args.rawIdTx,
       args.idHeight, args.currencyTransferOutputs, args.utxos, {chainIAddr: args.systemId, maxFee: args.maxFee,

@@ -28,6 +28,7 @@ const render = overrides => create(
   <ReviewStep
     signerFqn="requester@"
     signerIdentityID="iRequester"
+    signerSystemID="iSignerSystem"
     canOpenSignerModal
     openVerusIdDetailsModal={jest.fn()}
     chainId="VRSC"
@@ -73,8 +74,33 @@ describe('opening identity update review screen', () => {
       expect(style.maxHeight).toBeUndefined();
     }
 
-    act(() => renderer.root.findByProps({accessibilityLabel: 'View requester requester@'}).props.onPress());
-    expect(openRequester).toHaveBeenCalledWith('VRSC', 'iRequester');
+    act(() => renderer.root.findByProps({
+      accessibilityLabel: 'requester@. View signer requester@',
+    }).props.onPress());
+    expect(openRequester).toHaveBeenCalledWith('iSignerSystem', 'iRequester');
+    renderer.unmount();
+  });
+
+  it('attributes delegated requests while opening the actual signer on its canonical system', () => {
+    const openSigner = jest.fn();
+    const renderer = render({
+      signerFqn: 'representative@',
+      appOrDelegatorID: 'iRepresentedApp',
+      appOrDelegatorFqn: 'application@',
+      chainId: 'Friendly system name',
+      openVerusIdDetailsModal: openSigner,
+    });
+    const attribution = renderer.root.findByProps({
+      accessibilityLabel: 'representative@ on behalf of application@. View signer representative@',
+    });
+
+    // The prominent app name must not change the identity shown when tapped.
+    act(() => attribution.props.onPress());
+    expect(openSigner).toHaveBeenCalledWith('iSignerSystem', 'iRequester');
+    expect(openSigner).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'iRepresentedApp',
+    );
     renderer.unmount();
   });
 

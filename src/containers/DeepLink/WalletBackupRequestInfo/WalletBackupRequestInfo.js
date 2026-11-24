@@ -16,6 +16,7 @@ import {
   TextInput,
 } from 'react-native-paper';
 import Button from '../../../components/Button';
+import RequestSigner from '../../../components/RequestSigner';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {useDispatch, useSelector} from 'react-redux';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -123,6 +124,17 @@ const WalletBackupRequestInfo = props => {
     response,
     showSpendableKeyBackupChoice = false,
   } = props;
+
+  const requester = request?.hasAppOrDelegatorID?.() ? (
+    <RequestSigner
+      signerFqn={props.signerFqn}
+      signerIdentityID={props.signerIdentityID}
+      appOrDelegatorID={props.appOrDelegatorID}
+      appOrDelegatorFqn={props.appOrDelegatorFqn}
+      request={request}
+      style={{marginTop: 12, textAlign: 'center'}}
+    />
+  ) : null;
 
   const dispatch = useDispatch();
   const insets = useSafeAreaInsets();
@@ -516,6 +528,7 @@ const WalletBackupRequestInfo = props => {
               }}>
               Choose NFC Card Action
             </Text>
+            {requester}
             <Text
               style={{
                 color: Colors.verusDarkGray,
@@ -623,6 +636,7 @@ const WalletBackupRequestInfo = props => {
                 ? 'Create & Backup Wallet'
                 : 'Backup Wallet'}
             </Text>
+            {requester}
             <Text
               style={{
                 color: Colors.verusDarkGray,

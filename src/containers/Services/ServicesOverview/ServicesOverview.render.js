@@ -13,7 +13,8 @@ export const ServicesOverviewRender = function () {
   const {disabledServices} = this.props.activeAccount;
 
   CONNECTED_SERVICES.map((service, index) => {
-    if (disabledServices[service]) {
+    const info = CONNECTED_SERVICE_DISPLAY_INFO[service];
+    if (disabledServices[service] || (info.experimental && !this.props.experimentalRequestsEnabled)) {
       return;
     }
 

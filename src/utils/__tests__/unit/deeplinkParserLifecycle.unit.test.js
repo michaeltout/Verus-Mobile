@@ -12,11 +12,12 @@ jest.mock('../../../actions/actionCreators', () => jest.requireActual('../../../
 jest.mock('../../../actions/actions/alert/dispatchers/alert', () => ({createAlert: (...args) => mockAlert(...args)}));
 jest.mock('../../constants/constants', () => ({CALLBACK_HOST: 'callback', SUPPORTED_DLS: []}));
 jest.mock('../../deeplink/isDeeplinkHandlerInstalled', () => ({isDeeplinkHandlerInstalled: (...args) => mockInstalled(...args)}));
+jest.mock('../../deeplink/experimentalDeeplinks', () => ({assertExperimentalGenericRequestAllowed: jest.fn()}));
 jest.mock('../../deeplink/pendingDeeplinkStorage', () => ({
   savePendingDeeplinkRequest: (...args) => mockSave(...args),
   getPendingDeeplinkPassthrough: saved => saved ? {pendingDeeplinkId: saved.id} : null,
 }));
-jest.mock('verusid-ts-client', () => ({primitives: {}}));
+jest.mock('verusid-ts-client', () => ({primitives: {}, hasAppAuthorizationRequest: () => false}));
 jest.mock('verus-typescript-primitives', () => ({
   DEEPLINK_PROTOCOL_URL_STRING: 'verus', GENERIC_REQUEST_DEEPLINK_VDXF_KEY: {vdxfid: 'generic'},
   VALU_MOBILE_GENERIC_REQUEST_HANDLER_ID: 'valu', VERUS_MOBILE_GENERIC_REQUEST_HANDLER_ID: 'mobile',
@@ -68,7 +69,7 @@ it('publishes the current request after storage and preserves its passthrough', 
   dispatch(setDeeplinkData('generic', 'previous-request'));
   dispatch(setDeeplinkUrl('verus://request', {fromNfc: true}));
   await flush();
-  expect(state.deeplink).toMatchObject({data: 'previous-request', parsingUrl: true});
+  expect(state.deeplink).toMatchObject({data: {privateAuthorizationRequest: true}, parsingUrl: true});
   expect(emitted).toHaveLength(0);
   pending.resolve({id: 'saved-key'});
   await flush();

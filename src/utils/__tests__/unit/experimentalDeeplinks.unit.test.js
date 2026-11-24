@@ -1,4 +1,5 @@
 const {
+  APP_AUTHORIZATION_REQUEST_VDXF_KEY,
   APP_ENCRYPTION_REQUEST_VDXF_KEY,
   DATA_PACKET_REQUEST_VDXF_KEY,
   IDENTITY_UPDATE_REQUEST_VDXF_KEY,
@@ -32,6 +33,7 @@ const detail = key => ({
 
 describe('experimental deeplink gating', () => {
   const experimentalDetailKeys = [
+    APP_AUTHORIZATION_REQUEST_VDXF_KEY.vdxfid,
     IDENTITY_UPDATE_REQUEST_VDXF_KEY.vdxfid,
     APP_ENCRYPTION_REQUEST_VDXF_KEY.vdxfid,
     USER_DATA_REQUEST_VDXF_KEY.vdxfid,

@@ -245,6 +245,10 @@ jest.mock('../../api/channels/verusid/callCreators', () => ({
   getIdentity: mockGetIdentity,
 }));
 
+jest.mock('../../api/channels/verusid/requests/getIdentity', () => ({
+  getIdentity: (...args) => mockGetIdentity(...args),
+}));
+
 jest.mock('../../api/channels/verusid/requests/updateIdentity', () => ({
   createUpdateIdentityWithCurrencyTransferTx: mockCreateUpdateIdentityWithCurrencyTransferTx,
   createUpdateIdentityTxWithUtxos: mockCreateUpdateIdentityTxWithUtxos,
@@ -504,6 +508,84 @@ describe('spendable key claim utilities', () => {
     ];
   });
 
+  it.each([true, false])(
+    'bounds RPC discovery for duplicate user/storage records (full names: %s)',
+    async hasFullNames => {
+      const userID = 'user-identity';
+      const storageID = 'storage-identity';
+      const records = [userID, storageID].map((identityID, index) => ({
+        status: 'active',
+        txid: String(index + 1).repeat(64),
+        vout: 0,
+        blockheight: 100,
+        fullyqualifiedname: hasFullNames ? `${identityID}@` : undefined,
+        identity: {
+          identityaddress: identityID,
+          minimumsignatures: 1,
+          primaryaddresses: [mockRootClaimAddress],
+          recoveryauthority: userID,
+          revocationauthority: userID,
+          systemid: 'iJhCezBExJHvtyH3fGhNnt2NhU4Ztkf2yq',
+        },
+      }));
+      const outputs = records.map((record, index) => ({
+        txid: record.txid,
+        outputIndex: record.vout,
+        height: record.blockheight,
+        script: index === 0 ? 'f1' : 'f2',
+        satoshis: 0,
+        fullyqualifiedname: record.fullyqualifiedname,
+      }));
+      mockUnpackOutput.mockImplementation(
+        (output, _system, _input, allowIdentity) => {
+          if (!allowIdentity) throw new Error('identity output');
+          const index = output.script.toString('hex') === 'f1' ? 0 : 1;
+          return {
+            master: {eval: 14, data: {toJson: () => records[index].identity}},
+          };
+        },
+      );
+      mockGetAddressUtxos.mockImplementation(async (_system, addresses) => ({
+        result: addresses[0] === mockRootClaimAddress ? outputs : [],
+      }));
+      mockEndpoints[
+        mockRootCoin.system_id
+      ].getIdentitiesWithAddress.mockResolvedValue({result: records});
+      mockGetIdentity.mockImplementation(async (_system, identityID) => ({
+        result: {
+          ...records.find(
+            record => record.identity.identityaddress === identityID,
+          ),
+          fullyqualifiedname: `${identityID}@`,
+        },
+      }));
+      mockGetFriendlyNameMap.mockImplementation(
+        jest.requireActual(
+          '../../api/channels/verusid/requests/getFriendlyNameMap',
+        ).getFriendlyNameMap,
+      );
+
+      const plan = await discoverSpendableKeyClaims({
+        mnemonic: 'synthetic seed',
+        requestIsTestnet: false,
+        activeCoinsForUser: [],
+      });
+      expect(plan.systems[0].identities).toHaveLength(2);
+      expect(
+        plan.systems[0].identities.find(
+          identity => identity.identityAddress === storageID,
+        ).authorityNames,
+      ).toEqual({[userID]: `${userID}@`});
+      // Before deduplication this fixture made 14 getidentity reads (18 RPC
+      // calls total). Complete records now need none; missing names need two.
+      expect(mockGetIdentity).toHaveBeenCalledTimes(hasFullNames ? 0 : 2);
+      expect(mockGetAddressUtxos).toHaveBeenCalledTimes(3);
+      expect(
+        mockEndpoints[mockRootCoin.system_id].getIdentitiesWithAddress,
+      ).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('keeps top-level identity overrides separate from RPC metadata during discovery', async () => {
     const identity = {
       identityaddress: mockClaimedIdentityAddress,
@@ -538,6 +620,35 @@ describe('spendable key claim utilities', () => {
       flags: 0,
       contentmap: null,
     });
+  });
+
+  it('enriches partial address-index identities before checking gift ownership', async () => {
+    const partial = {identityaddress: mockClaimedIdentityAddress};
+    const identity = {
+      ...partial,
+      minimumsignatures: 1,
+      primaryaddresses: [mockRootClaimAddress],
+    };
+    mockEndpoints[
+      mockRootCoin.system_id
+    ].getIdentitiesWithAddress.mockResolvedValue({
+      result: [{identity: partial}],
+    });
+    mockGetIdentity.mockResolvedValue({
+      result: {identity, fullyqualifiedname: 'gift.parent@'},
+    });
+
+    const plan = await discoverSpendableKeyClaims({
+      mnemonic: 'seed words',
+      requestIsTestnet: false,
+      activeCoinsForUser: [],
+    });
+    expect(plan.systems[0].identities).toHaveLength(1);
+    expect(plan.systems[0].identities[0]).toMatchObject({
+      identityAddress: mockClaimedIdentityAddress,
+      fullyQualifiedName: 'gift.parent@',
+    });
+    expect(mockGetIdentity).toHaveBeenCalledTimes(1);
   });
 
   it.each(['gift.dudecoin.VRSCTEST@', undefined])(
@@ -760,6 +871,40 @@ describe('spendable key claim utilities', () => {
         system => system.systemId === mockPbaasCoin.system_id,
       ).observedUtxos,
     ).toEqual([pbaasUtxo]);
+  });
+
+  it('starts both asset indexes together and marks a failed identity scan incomplete', async () => {
+    let resolveUtxos;
+    mockGetAddressUtxos.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolveUtxos = resolve;
+        }),
+    );
+    const identityLookup =
+      mockEndpoints[mockRootCoin.system_id].getIdentitiesWithAddress;
+    identityLookup.mockRejectedValueOnce(
+      new Error('Identity index unavailable'),
+    );
+    const discovery = discoverSpendableKeyClaims({
+      mnemonic: 'seed words',
+      requestIsTestnet: false,
+      activeCoinsForUser: [],
+      includeKnownSystems: true,
+    });
+
+    // Key derivation resolves first; neither network index waits for the other.
+    await Promise.resolve();
+    expect(mockGetAddressUtxos).toHaveBeenCalledTimes(1);
+    expect(identityLookup).toHaveBeenCalledTimes(1);
+    resolveUtxos({result: []});
+
+    const plan = await discovery;
+    expect(plan.scanUniverseComplete).toBe(false);
+    expect(plan.systems[0]).toMatchObject({
+      identityLookupSucceeded: false,
+      identityLookupError: 'Identity index unavailable',
+    });
   });
 
   it('marks an empty complete locally supported PBaaS scan as exhaustive', async () => {
@@ -1086,6 +1231,39 @@ describe('spendable key claim utilities', () => {
         },
       }),
     ).rejects.toThrow('No claimable transparent funds or VerusIDs');
+  });
+
+  it('keeps independent fee inputs and the final asset sweep usable regardless of RPC order', async () => {
+    const {nameAndParentAddrToIAddr} = require('verus-typescript-primitives');
+    const secondIdentityAddress = nameAndParentAddrToIAddr('second-claim', mockClaimedIdentityAddress);
+    const originalInputs = [rootSweepUtxo, rootTokenUtxo, rootExactFeeUtxo];
+    const plan = await preflightSpendableKeyClaim({
+      claimPlan: {
+        requestIsTestnet: false,
+        systems: [{
+          systemId: mockRootCoin.system_id,
+          coinObj: mockRootCoin,
+          claimWif: 'claim-wif',
+          utxos: originalInputs,
+          identities: [
+            {identityAddress: mockClaimedIdentityAddress, result: {blockheight: 20}},
+            {identityAddress: secondIdentityAddress, result: {blockheight: 21}},
+          ],
+        }],
+      },
+      destinationBySystem: {[mockRootCoin.system_id]: mockDestinationAddress},
+    });
+
+    expect(plan.transactions).toHaveLength(2);
+    expect(mockCreateUpdateIdentityTxWithUtxos).toHaveBeenCalledWith(
+      expect.objectContaining({utxos: [rootExactFeeUtxo]}),
+    );
+    expect(mockCreateUpdateIdentityWithCurrencyTransferTx).toHaveBeenCalledWith(
+      expect.objectContaining({utxos: [rootSweepUtxo, rootTokenUtxo]}),
+    );
+    expect(originalInputs).toEqual([rootSweepUtxo, rootTokenUtxo, rootExactFeeUtxo]);
+    expect(mockEndpoints[mockRootCoin.system_id].fundRawTransaction).not.toHaveBeenCalled();
+    expect(mockSendRawTransaction).not.toHaveBeenCalled();
   });
 
   it('sets the wallet private address on every claimed identity when requested', async () => {

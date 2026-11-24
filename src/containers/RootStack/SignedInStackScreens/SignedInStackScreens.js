@@ -3,7 +3,7 @@ import { createDrawerNavigator } from '@react-navigation/drawer';
 import SideMenu from '../../SideMenu/SideMenu';
 import MainStackScreens from '../MainStackScreens/MainStackScreens';
 import { useDispatch, useSelector, useStore } from 'react-redux';
-import { setDeeplinkUrl } from '../../../actions/actionCreators';
+import { setDeeplinkUrl, setDeeplinkData } from '../../../actions/actionCreators';
 
 const MainDrawer = createDrawerNavigator()
 
@@ -12,6 +12,7 @@ const SignedInStackScreens = props => {
   const deeplinkUrl = useSelector((state) => state.deeplink.url)
   const parsingUrl = useSelector(state => state.deeplink.parsingUrl);
   const requestId = useSelector(state => state.deeplink.requestId);
+  const resumeAuthorization = useSelector(state => state.deeplink.passthrough?.resumeAuthorizationAfterSetup === true);
   const store = useStore();
   const dispatch = useDispatch()
 
@@ -24,6 +25,19 @@ const SignedInStackScreens = props => {
       props.navigation.navigate('DeepLink', {screen: 'VerifyDeepLink'});
     }
   }, [deeplinkId, deeplinkUrl, parsingUrl, requestId, store]);
+
+  useEffect(() => {
+    const current = store.getState().deeplink;
+    if (!resumeAuthorization || !current.data?.authorizationPendingId) return;
+
+    // Consume only the navigation marker. The encrypted request remains saved
+    // until its durable authorization job has completed.
+    dispatch(setDeeplinkData(current.id, current.data, current.fromService, {
+      ...current.passthrough,
+      resumeAuthorizationAfterSetup: false,
+    }));
+    props.navigation.navigate('DeepLink', {screen: 'VerifyDeepLink'});
+  }, [resumeAuthorization, store]);
 
   return (
     <MainDrawer.Navigator

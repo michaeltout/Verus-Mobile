@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import {Checkbox, Text, TextInput} from 'react-native-paper';
 import Button from '../../../components/Button';
+import RequestSigner from '../../../components/RequestSigner';
 import {useDispatch, useSelector} from 'react-redux';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -466,6 +467,17 @@ const SpendableKeyRequestInfo = props => {
     response,
     requiresPassword,
   } = props;
+
+  const requester = request?.hasAppOrDelegatorID?.() ? (
+    <RequestSigner
+      signerFqn={props.signerFqn}
+      signerIdentityID={props.signerIdentityID}
+      appOrDelegatorID={props.appOrDelegatorID}
+      appOrDelegatorFqn={props.appOrDelegatorFqn}
+      request={request}
+      style={{marginTop: 12, textAlign: 'center'}}
+    />
+  ) : null;
 
   const dispatch = useDispatch();
   const insets = useSafeAreaInsets();
@@ -1324,6 +1336,7 @@ const SpendableKeyRequestInfo = props => {
               <Text style={[styles.mainTitle, {textAlign: 'center'}]}>
                 {'Decrypt spendable key'}
               </Text>
+              {requester}
               <Text style={styles.passwordDescription}>
                 {'This spendable key is encrypted and needs to be decrypted before you can redeem its funds or VerusIDs.'}
               </Text>
@@ -1442,6 +1455,7 @@ const SpendableKeyRequestInfo = props => {
           <Text style={styles.mainTitle}>
             {status === 'error' ? requestError?.title || 'Network error' : claimTitle}
           </Text>
+          {requester}
           <Text style={styles.subtitle}>
             {status === 'error'
               ? 'Retry when your connection is available.'

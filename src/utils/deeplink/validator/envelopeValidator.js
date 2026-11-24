@@ -1,6 +1,6 @@
 import { AUTHENTICATION_REQUEST_VDXF_KEY, GenericRequest, IDENTITY_UPDATE_REQUEST_VDXF_KEY, PROVISION_IDENTITY_DETAILS_VDXF_KEY, 
   VERUSPAY_INVOICE_DETAILS_VDXF_KEY, VerusPayInvoiceDetailsOrdinalVDXFObject, APP_ENCRYPTION_REQUEST_VDXF_KEY, CREATE_WALLET_BACKUP_DETAILS_VDXF_KEY, SPENDABLE_KEY_DETAILS_VDXF_KEY, SpendableKeyDetailsOrdinalVDXFObject,
-  USER_DATA_REQUEST_VDXF_KEY, DATA_PACKET_REQUEST_VDXF_KEY,
+  USER_DATA_REQUEST_VDXF_KEY, DATA_PACKET_REQUEST_VDXF_KEY, APP_AUTHORIZATION_REQUEST_VDXF_KEY,
   CreateWalletBackupDetailsOrdinalVDXFObject} from "verus-typescript-primitives"
 import { validateAuthenticationRequestVDXFObject } from "./authenticationRequestValidator";
 import { validateIdentityUpdateRequestVDXFObject } from "./identityUpdateRequestValidator";
@@ -12,6 +12,7 @@ import { validateCreateWalletBackupDetailsVDXFObject } from "./createWalletBacku
 import { validateSpendableKeyDetailsVDXFObject } from "./spendableKeyDetailsValidator";
 import { validateUserDataRequestVDXFObject } from "./userDataRequestValidator";
 import { validateDataPacketRequestVDXFObject } from "./dataPacketRequestValidator";
+import { validateAppAuthorizationRequestVDXFObject } from './appAuthorizationRequestValidator';
 import { VerusIdInterface } from "verusid-ts-client";
 
 /**
@@ -32,6 +33,7 @@ export const isRequestRequiredSignature = (request) => {
 
 export const getValidatorForDetail = (detailKey) => {
   const detailValidators = {
+    [APP_AUTHORIZATION_REQUEST_VDXF_KEY.vdxfid]: validateAppAuthorizationRequestVDXFObject,
     [AUTHENTICATION_REQUEST_VDXF_KEY.vdxfid]: validateAuthenticationRequestVDXFObject,
     [IDENTITY_UPDATE_REQUEST_VDXF_KEY.vdxfid]: validateIdentityUpdateRequestVDXFObject,
     [PROVISION_IDENTITY_DETAILS_VDXF_KEY.vdxfid]: validateProvisionIdentityDetailsVDXFObject,
@@ -56,7 +58,7 @@ export const getValidatorForDetail = (detailKey) => {
  * @param {any} coinObj
  * @param {GenericRequest} request 
  */
-export const validateGenericRequest = async (request) => {
+export const validateGenericRequest = async (request, context = {}) => {
   if (!request.isSigned() && (isRequestRequiredSignature(request) || request.hasAppOrDelegatorID())) {
     throw new Error("This type of request requires a signature")
   }
@@ -71,7 +73,7 @@ export const validateGenericRequest = async (request) => {
   }
 
   if (request.isSigned()) {
-    await assertSignedRequestAuthorization(request);
+    await assertSignedRequestAuthorization(request, context);
   } else if (!VerusIdInterface.validateUnsignedGenericRequest(request)) {
     throw new Error("Failed to verify request")
   }

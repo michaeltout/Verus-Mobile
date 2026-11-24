@@ -121,6 +121,23 @@ beforeEach(() => {
 });
 
 describe('identity update content history for review', () => {
+  it('preserves the app and actual delegate separately in the review metadata', async () => {
+    const appID = toIAddress('app', 'VRSC');
+    const request = makeRequest();
+    request.hasAppOrDelegatorID = () => true;
+    request.appOrDelegatorID = CompactIAddressObject.fromAddress(appID);
+    getIdentity.mockImplementation(async (_, id) => ({result: id === SUBJECT_ID
+      ? subjectIdentity
+      : {fullyqualifiedname: id === SIGNER_ID ? 'delegate.VRSC@' : 'app.VRSC@'},
+    }));
+
+    const {displayProps} = await handleRequest(request);
+    expect(displayProps).toMatchObject({
+      signerIdentityID: SIGNER_ID, signerFqn: 'delegate@',
+      appOrDelegatorID: appID, appOrDelegatorFqn: 'app@',
+    });
+  });
+
   it.each([
     ['without content changes', undefined],
     ['with accumulated content', newContent],

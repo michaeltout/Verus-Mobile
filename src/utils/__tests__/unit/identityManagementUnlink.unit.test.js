@@ -11,6 +11,9 @@ jest.mock('../../../store', () => ({
   __esModule: true, default: {dispatch: mockDispatch, getState: () => mockState},
 }));
 jest.mock('../../asyncStore/serviceStoredDataStorage', () => ({
+  loadServiceStoredData: jest.fn(async () => ({
+    [mockState.authentication.activeAccount.accountHash]: {...mockStoredData},
+  })),
   loadServiceStoredDataForUser: jest.fn(async () => ({...mockStoredData})),
   storeServiceStoredDataForUser: jest.fn(async data => {
     await Promise.resolve();
@@ -43,8 +46,16 @@ jest.mock('../../CoinData/CoinsList', () => ({coinsList: {}}));
 jest.mock('../../keys', () => ({deriveKeyPair: jest.fn()}));
 
 const {nameAndParentAddrToIAddr} = require('verus-typescript-primitives');
-const {unlinkUpdatedIdentity} = require('../../identityManagement/unlinkAfterUpdate');
-const {linkVerusId} = require('../../../actions/actions/services/dispatchers/verusid/verusid');
+const {
+  refreshLinkedIdentityWallet,
+  unlinkUpdatedIdentity,
+} = require('../../identityManagement/unlinkAfterUpdate');
+const {
+  linkVerusId,
+  markVerusIdAsStorage,
+  withLinkedVerusId,
+  withStorageVerusId,
+} = require('../../../actions/actions/services/dispatchers/verusid/verusid');
 const {modifyServiceStoredDataForUser} = require('../../../actions/actions/services/dispatchers/services');
 const {requestServiceStoredData} = require('../../auth/authBox');
 const {loadServiceStoredDataForUser, storeServiceStoredDataForUser} = require('../../asyncStore/serviceStoredDataStorage');
@@ -96,6 +107,62 @@ describe('unlink after an accepted identity update', () => {
     expect(JSON.stringify(watchedActions())).not.toContain('private-reservation');
   });
 
+  it('refreshes saved wallet links without removing an identity or rewriting encrypted records', async () => {
+    const requestContext = context();
+    const savedData = {...mockStoredData};
+
+    await refreshLinkedIdentityWallet('VRSC', requestContext);
+
+    expect(mockStoredData).toEqual(savedData);
+    expect(storeServiceStoredDataForUser).not.toHaveBeenCalled();
+    expect(watchedActions()).toEqual([expect.objectContaining({
+      meta: requestContext.sessionScope,
+      payload: {watchedVerusIds: data().linked_ids},
+    })]);
+    expect(mockClearLifecycle).toHaveBeenCalledWith('VRSC', undefined, requestContext.sessionScope);
+    expect(mockSetUserCoins).toHaveBeenCalledWith(mockState.coins.activeCoinList, 'alice');
+    expect(mockDispatch).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'SET_USER_COINS',
+      meta: requestContext.sessionScope,
+    }));
+    expect(mockRefreshLifecycles).toHaveBeenCalledWith(mockState.coins.activeCoinList);
+    expect(JSON.stringify(mockDispatch.mock.calls)).not.toContain('private-reservation');
+  });
+
+  it('honors operation cancellation while reading links before publishing or rebuilding', async () => {
+    let cancelled = false;
+    const requestContext = {
+      ...context(),
+      assertActive: () => {
+        if (cancelled) throw new Error('Operation cancelled');
+      },
+    };
+    requestServiceStoredData.mockImplementationOnce(async () => {
+      cancelled = true;
+      return data();
+    });
+
+    await expect(refreshLinkedIdentityWallet('VRSC', requestContext))
+      .rejects.toThrow('Operation cancelled');
+
+    expect(mockDispatch).not.toHaveBeenCalled();
+    expect(mockClearLifecycle).not.toHaveBeenCalled();
+    expect(mockSetUserCoins).not.toHaveBeenCalled();
+    expect(storeServiceStoredDataForUser).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid network or stale refresh context before reading links', async () => {
+    await expect(refreshLinkedIdentityWallet('', context())).rejects.toThrow('network');
+
+    const stale = context();
+    mockState.authentication.sessionEpoch++;
+    await expect(refreshLinkedIdentityWallet('VRSC', stale))
+      .rejects.toMatchObject({code: 'SESSION_CHANGED'});
+
+    expect(requestServiceStoredData).not.toHaveBeenCalled();
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
   it('merges concurrent link and registration writes through the existing storage queue', async () => {
     const requestContext = context();
     await Promise.all([
@@ -108,6 +175,84 @@ describe('unlink after an accepted identity update', () => {
     ]);
     expect(data().linked_ids.VRSC).toEqual({[OTHER]: 'kept@', iNewlyLinked: 'new@'});
     expect(Object.keys(data().registration_jobs.jobs)).toEqual(['saved', 'second']);
+  });
+
+  it('classifies storage and links its user together without changing the input document', async () => {
+    const original = data();
+    const snapshot = JSON.stringify(original);
+    const classified = withStorageVerusId(original, ID, 'transferred@', 'VRSC', OTHER);
+    const linked = withLinkedVerusId(classified, OTHER, 'kept@', 'VRSC');
+
+    expect(JSON.stringify(original)).toBe(snapshot);
+    expect(linked.linked_ids).toEqual({
+      VRSC: {[OTHER]: 'kept@'},
+      VRSCTEST: {[ID]: 'test@'},
+    });
+    expect(linked.storage_ids.VRSC[ID].userIdentityIDs).toEqual([OTHER]);
+    expect(linked.registration_jobs).toBe(original.registration_jobs);
+    expect(withLinkedVerusId(linked, ID, 'transferred@', 'VRSC')).toBe(linked);
+
+    await modifyServiceStoredDataForUser(
+      current => withLinkedVerusId(
+        withStorageVerusId(current, ID, 'transferred@', 'VRSC', OTHER),
+        OTHER,
+        'kept@',
+        'VRSC',
+      ),
+      VERUSID_SERVICE_ID,
+      'account-a',
+      context(),
+    );
+
+    expect(data()).toEqual(linked);
+    expect(storeServiceStoredDataForUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not rewrite unchanged links or storage classifications', async () => {
+    expect(await linkVerusId(OTHER, 'kept@', 'VRSC', context())).toBe(true);
+    expect(storeServiceStoredDataForUser).not.toHaveBeenCalled();
+
+    await markVerusIdAsStorage(ID, 'transferred@', 'VRSC', OTHER, context());
+    await markVerusIdAsStorage(ID, 'transferred@', 'VRSC', OTHER, context());
+    expect(await linkVerusId(ID, 'transferred@', 'VRSC', context())).toBe(false);
+
+    expect(storeServiceStoredDataForUser).toHaveBeenCalledTimes(1);
+    expect(data().linked_ids.VRSC[ID]).toBeUndefined();
+    expect(data().storage_ids.VRSC[ID].userIdentityIDs).toEqual([OTHER]);
+  });
+
+  it('reclaims confirmed storage as a wallet link and unlinks it again when reused by an app', async () => {
+    await markVerusIdAsStorage(ID, 'transferred@', 'VRSC', OTHER, context());
+    const original = data();
+    const snapshot = JSON.stringify(original);
+    const reclaimed = withLinkedVerusId(
+      original, ID, 'transferred@', 'VRSC', {reclaimStorage: true},
+    );
+
+    expect(JSON.stringify(original)).toBe(snapshot);
+    expect(reclaimed.linked_ids).toEqual({
+      VRSC: {[ID]: 'transferred@', [OTHER]: 'kept@'},
+      VRSCTEST: {[ID]: 'test@'},
+    });
+    expect(reclaimed.storage_ids.VRSC[ID]).toBeUndefined();
+    expect(reclaimed.registration_jobs).toBe(original.registration_jobs);
+    expect(withLinkedVerusId(
+      reclaimed, ID, 'transferred@', 'VRSC', {reclaimStorage: true},
+    )).toBe(reclaimed);
+
+    await modifyServiceStoredDataForUser(
+      current => withLinkedVerusId(
+        current, ID, 'transferred@', 'VRSC', {reclaimStorage: true},
+      ),
+      VERUSID_SERVICE_ID,
+      'account-a',
+      context(),
+    );
+    await markVerusIdAsStorage(ID, 'transferred@', 'VRSC', OTHER, context());
+
+    expect(data().linked_ids.VRSC[ID]).toBeUndefined();
+    expect(data().storage_ids.VRSC[ID].userIdentityIDs).toEqual([OTHER]);
+    expect(data().linked_ids.VRSCTEST[ID]).toBe('test@');
   });
 
   it('can retry local cleanup after wallet refresh fails without restoring the removed link', async () => {
